@@ -101,6 +101,7 @@ export default function App() {
   const [modelOverride, setModelOverride] = useState<string | null>(null);
   const [threadTokenUsage, setThreadTokenUsage] = useState<ThreadTokenUsage | null>(null);
   const [usagePanel, setUsagePanel] = useState<GetAccountRateLimitsResponse | null>(null);
+  const [pendingThreadId, setPendingThreadId] = useState<string | null>(null);
 
   // Refs mirroring state that event handlers need without re-subscribing.
   const activeThreadIdRef = useRef<string | null>(null);
@@ -296,12 +297,12 @@ export default function App() {
   }, [scheduleFlush]);
 
   // --- actions ---
-  const doConnect = async () => {
+  const doConnect = async (): Promise<boolean> => {
     if (!codexPath.trim()) {
       setErrorBanner(
         "WSL内のcodex実行ファイルの絶対パスを入力してください。WSLターミナルで `which codex` を実行すると確認できます（例: /home/user/.nvm/versions/node/v22.22.2/bin/codex）。灰色の文字は入力例であり、値は未入力です。"
       );
-      return;
+      return false;
     }
     localStorage.setItem("distro", distro);
     localStorage.setItem("codexPath", codexPath);
@@ -312,9 +313,11 @@ export default function App() {
       setInitInfo(info);
       setConnState("connected");
       await refreshThreads();
+      return true;
     } catch (e) {
       setConnState("disconnected");
       setErrorBanner(`接続失敗: ${e}`);
+      return false;
     }
   };
 
@@ -333,7 +336,7 @@ export default function App() {
     }
   };
 
-  const openThread = async (threadId: string) => {
+  const resumeThread = async (threadId: string) => {
     setErrorBanner(null);
     try {
       const res = (await invoke("rpc_request", {
@@ -351,6 +354,25 @@ export default function App() {
     } catch (e) {
       setErrorBanner(`thread/resume failed: ${e}`);
     }
+  };
+
+  // Thread list stays visible after disconnect (spec: it's read from a
+  // Codex-side source of truth, 8.1節); clicking one while not connected
+  // asks first instead of failing with "not connected".
+  const openThread = async (threadId: string) => {
+    if (connState !== "connected") {
+      setPendingThreadId(threadId);
+      return;
+    }
+    await resumeThread(threadId);
+  };
+
+  const confirmPendingThreadConnect = async () => {
+    const threadId = pendingThreadId;
+    setPendingThreadId(null);
+    if (!threadId) return;
+    const ok = await doConnect();
+    if (ok) await resumeThread(threadId);
   };
 
   const newThread = async () => {
@@ -790,6 +812,23 @@ export default function App() {
             <button className="mini" onClick={() => setModelPicker(null)}>
               閉じる
             </button>
+          </div>
+        </div>
+      )}
+
+      {pendingThreadId && (
+        <div className="modal-backdrop" onClick={() => setPendingThreadId(null)}>
+          <div className="modal confirm" onClick={(e) => e.stopPropagation()}>
+            <h3>接続しますか？</h3>
+            <p>このスレッドを開くにはCodexサーバーへ接続する必要があります。</p>
+            <div className="decisions">
+              <button className="primary" onClick={() => void confirmPendingThreadConnect()}>
+                はい
+              </button>
+              <button className="danger" onClick={() => setPendingThreadId(null)}>
+                いいえ
+              </button>
+            </div>
           </div>
         </div>
       )}
