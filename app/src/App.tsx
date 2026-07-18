@@ -107,6 +107,8 @@ export default function App() {
   const [pendingThreadId, setPendingThreadId] = useState<string | null>(null);
   const [renamingThreadId, setRenamingThreadId] = useState<string | null>(null);
   const [renameInput, setRenameInput] = useState("");
+  const [diffPanel, setDiffPanel] = useState<{ sha: string; diff: string } | null>(null);
+  const [statusPanel, setStatusPanel] = useState<Thread | null>(null);
 
   // Refs mirroring state that event handlers need without re-subscribing.
   const activeThreadIdRef = useRef<string | null>(null);
@@ -533,26 +535,6 @@ export default function App() {
     }
   };
 
-  const send = async () => {
-    const text = input.trim();
-    if (!text || !activeThreadId || activeTurnId) return;
-    setInput("");
-    setErrorBanner(null);
-    try {
-      // N-17: sends are serialized — input is disabled while a turn runs.
-      await invoke("rpc_request", {
-        method: "turn/start",
-        params: {
-          threadId: activeThreadId,
-          input: [{ type: "text", text, text_elements: [] }],
-          ...(modelOverride ? { model: modelOverride } : {}),
-        },
-      });
-    } catch (e) {
-      setErrorBanner(`turn/start failed: ${e}`);
-    }
-  };
-
   const stop = async () => {
     if (!activeThreadId || !activeTurnId) return;
     try {
@@ -604,14 +586,80 @@ export default function App() {
     setUsageModalOpen(true);
   };
 
+  const showDiff = async () => {
+    if (!projectCwd) {
+      setErrorBanner("プロジェクトが選択されていません");
+      return;
+    }
+    try {
+      const res = await invoke<{ sha: string; diff: string }>("rpc_request", {
+        method: "gitDiffToRemote",
+        params: { cwd: projectCwd },
+      });
+      setDiffPanel(res);
+    } catch (e) {
+      setErrorBanner(`gitDiffToRemote failed: ${e}`);
+    }
+  };
+
+  const showStatus = async () => {
+    if (!activeThreadId) {
+      setErrorBanner("スレッドが選択されていません");
+      return;
+    }
+    try {
+      const res = await invoke<{ thread: Thread }>("rpc_request", {
+        method: "thread/read",
+        params: { threadId: activeThreadId },
+      });
+      setStatusPanel(res.thread);
+    } catch (e) {
+      setErrorBanner(`thread/read failed: ${e}`);
+    }
+  };
+
+  const copyLastResponse = async () => {
+    const last = [...items].reverse().find((di) => di.item.type === "agentMessage");
+    const text = last ? (last.item as Extract<ThreadItem, { type: "agentMessage" }>).text : "";
+    if (!text) {
+      setErrorBanner("コピーできる応答がありません");
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch (e) {
+      setErrorBanner(`クリップボードへのコピーに失敗しました: ${e}`);
+    }
+  };
+
   // "/" command palette. Runs a local GUI action; nothing here is text sent
-  // to the model. Selecting /model opens a second-level list (modelPicker)
-  // instead of executing immediately.
-  const slashCommands: { name: string; description: string; run: () => void }[] = [
+  // to the model (except takesArg commands, which resolve to their own RPC
+  // call, not a turn/start). Selecting /model opens a second-level list
+  // (modelPicker) instead of executing immediately.
+  const slashCommands: { name: string; description: string; takesArg?: boolean; run: (arg?: string) => void }[] = [
     {
       name: "new",
       description: "選択中のプロジェクトで新しいスレッドを作成",
       run: () => void newThread(),
+    },
+    {
+      name: "goal",
+      description: "スレッドのゴールを設定（例: /goal ログイン機能を完成させる）",
+      takesArg: true,
+      run: (arg) => {
+        if (!activeThreadId) {
+          setErrorBanner("スレッドが選択されていません");
+          return;
+        }
+        if (!arg) {
+          setErrorBanner("ゴールの内容を入力してください（例: /goal ログイン機能を完成させる）");
+          return;
+        }
+        void invoke("rpc_request", {
+          method: "thread/goal/set",
+          params: { threadId: activeThreadId, objective: arg },
+        }).catch((e) => setErrorBanner(`thread/goal/set failed: ${e}`));
+      },
     },
     {
       name: "compact",
@@ -626,6 +674,21 @@ export default function App() {
           params: { threadId: activeThreadId },
         }).catch((e) => setErrorBanner(`thread/compact/start failed: ${e}`));
       },
+    },
+    {
+      name: "diff",
+      description: "プロジェクトのgit diffを表示",
+      run: () => void showDiff(),
+    },
+    {
+      name: "status",
+      description: "現在のスレッドの状態を表示",
+      run: () => void showStatus(),
+    },
+    {
+      name: "copy",
+      description: "直前のアシスタント応答をクリップボードにコピー",
+      run: () => void copyLastResponse(),
     },
     {
       name: "model",
@@ -656,11 +719,54 @@ export default function App() {
       ? []
       : slashCommands.filter((c) => c.name.startsWith(slashQuery));
 
-  const runSlashCommand = (cmd: { run: () => void }) => {
+  // Parameterless commands run immediately; takesArg commands only complete
+  // the input to "/name " so the user can keep typing the argument (executed
+  // later from send(), not from the palette).
+  const runSlashCommand = (cmd: (typeof slashCommands)[number]) => {
+    if (cmd.takesArg) {
+      setInput(`/${cmd.name} `);
+      setSlashOpen(false);
+      setSlashIndex(0);
+      return;
+    }
     cmd.run();
     setInput("");
     setSlashOpen(false);
     setSlashIndex(0);
+  };
+
+  const send = async () => {
+    const text = input.trim();
+    if (!text || !activeThreadId || activeTurnId) return;
+
+    // "/name <arg>" typed out and submitted with Enter (not selected from
+    // the dropdown, which already handled parameterless commands earlier).
+    const argMatch = /^\/([a-zA-Z-]+)\s+([\s\S]+)$/.exec(text);
+    if (argMatch) {
+      const cmd = slashCommands.find((c) => c.name === argMatch[1] && c.takesArg);
+      if (cmd) {
+        setInput("");
+        setErrorBanner(null);
+        cmd.run(argMatch[2].trim());
+        return;
+      }
+    }
+
+    setInput("");
+    setErrorBanner(null);
+    try {
+      // N-17: sends are serialized — input is disabled while a turn runs.
+      await invoke("rpc_request", {
+        method: "turn/start",
+        params: {
+          threadId: activeThreadId,
+          input: [{ type: "text", text, text_elements: [] }],
+          ...(modelOverride ? { model: modelOverride } : {}),
+        },
+      });
+    } catch (e) {
+      setErrorBanner(`turn/start failed: ${e}`);
+    }
   };
 
   // N-05: never send/navigate while IME composition is active.
@@ -1034,6 +1140,38 @@ export default function App() {
               </>
             )}
             <button className="mini" onClick={() => setUsageModalOpen(false)}>
+              閉じる
+            </button>
+          </div>
+        </div>
+      )}
+
+      {diffPanel && (
+        <div className="modal-backdrop" onClick={() => setDiffPanel(null)}>
+          <div className="modal wide" onClick={(e) => e.stopPropagation()}>
+            <h3>git diff</h3>
+            <p className="cwd">対リモートSHA: {diffPanel.sha}</p>
+            <pre className="diff-view">{diffPanel.diff || "(差分なし)"}</pre>
+            <button className="mini" onClick={() => setDiffPanel(null)}>
+              閉じる
+            </button>
+          </div>
+        </div>
+      )}
+
+      {statusPanel && (
+        <div className="modal-backdrop" onClick={() => setStatusPanel(null)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <h3>スレッド状態</h3>
+            <ul className="usage-tokens">
+              <li>ID: {statusPanel.id}</li>
+              <li>名前: {statusPanel.name ?? "(未設定)"}</li>
+              <li>cwd: {statusPanel.cwd}</li>
+              <li>状態: {statusPanel.status.type}</li>
+              <li>更新日時: {new Date(statusPanel.updatedAt * 1000).toLocaleString()}</li>
+              <li>turn数: {statusPanel.turns.length}</li>
+            </ul>
+            <button className="mini" onClick={() => setStatusPanel(null)}>
               閉じる
             </button>
           </div>

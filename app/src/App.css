@@ -268,6 +268,12 @@ body { background: var(--bg); color: var(--text); }
   padding: 20px 24px; max-width: 560px; width: 90%;
   border: 1px solid var(--border);
 }
+.modal.wide { max-width: 900px; }
+.diff-view {
+  background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
+  padding: 10px; font-family: Consolas, monospace; font-size: 12px;
+  max-height: 60vh; overflow: auto; white-space: pre-wrap; word-break: break-all;
+}
 .modal h3 { margin: 0 0 4px; }
 .modal .method { font-size: 11px; color: var(--muted); margin: 0 0 10px; }
 .modal pre {
