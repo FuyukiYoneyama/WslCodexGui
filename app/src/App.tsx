@@ -101,6 +101,7 @@ export default function App() {
   const [modelOverride, setModelOverride] = useState<string | null>(null);
   const [threadTokenUsage, setThreadTokenUsage] = useState<ThreadTokenUsage | null>(null);
   const [usagePanel, setUsagePanel] = useState<GetAccountRateLimitsResponse | null>(null);
+  const [usageModalOpen, setUsageModalOpen] = useState(false);
   const [pendingThreadId, setPendingThreadId] = useState<string | null>(null);
 
   // Refs mirroring state that event handlers need without re-subscribing.
@@ -144,6 +145,20 @@ export default function App() {
       setThreads(res.data);
     } catch (e) {
       setErrorBanner(`thread/list failed: ${e}`);
+    }
+  }, []);
+
+  // Silent refresh for the always-on footer badge (no error banner spam —
+  // this runs automatically, not on explicit user action).
+  const fetchUsage = useCallback(async () => {
+    try {
+      const res = await invoke<GetAccountRateLimitsResponse>("rpc_request", {
+        method: "account/rateLimits/read",
+        params: undefined,
+      });
+      setUsagePanel(res);
+    } catch {
+      // connection may be mid-teardown etc.; footer badge just stays stale
     }
   }, []);
 
@@ -214,6 +229,7 @@ export default function App() {
             if (p.turn.status === "failed") {
               setErrorBanner(`Turn failed: ${JSON.stringify(p.turn.error)}`);
             }
+            void fetchUsage(); // keep the footer badge current after each turn
             break;
           }
           case "item/started": {
@@ -294,7 +310,7 @@ export default function App() {
     return () => {
       for (const u of unlisteners) u.then((f) => f());
     };
-  }, [scheduleFlush]);
+  }, [scheduleFlush, fetchUsage]);
 
   // --- actions ---
   const doConnect = async (): Promise<boolean> => {
@@ -313,6 +329,7 @@ export default function App() {
       setInitInfo(info);
       setConnState("connected");
       await refreshThreads();
+      void fetchUsage();
       return true;
     } catch (e) {
       setConnState("disconnected");
@@ -333,6 +350,8 @@ export default function App() {
       setActiveTurnId(null);
       setItems([]);
       setApprovals([]);
+      setUsagePanel(null);
+      setUsageModalOpen(false);
     }
   };
 
@@ -473,16 +492,11 @@ export default function App() {
     setModelPicker(null);
   };
 
+  // Silent refresh for the always-on footer badge (no error banner spam —
+  // this runs automatically, not on explicit user action).
   const openUsagePanel = async () => {
-    try {
-      const res = await invoke<GetAccountRateLimitsResponse>("rpc_request", {
-        method: "account/rateLimits/read",
-        params: undefined,
-      });
-      setUsagePanel(res);
-    } catch (e) {
-      setErrorBanner(`account/rateLimits/read failed: ${e}`);
-    }
+    await fetchUsage();
+    setUsageModalOpen(true);
   };
 
   // "/" command palette. Runs a local GUI action; nothing here is text sent
@@ -846,8 +860,8 @@ export default function App() {
         </div>
       )}
 
-      {usagePanel && (
-        <div className="modal-backdrop" onClick={() => setUsagePanel(null)}>
+      {usageModalOpen && usagePanel && (
+        <div className="modal-backdrop" onClick={() => setUsageModalOpen(false)}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <h3>使用量</h3>
             <UsageWindow label="Primary" w={usagePanel.rateLimits.primary} />
@@ -865,7 +879,7 @@ export default function App() {
                 </ul>
               </>
             )}
-            <button className="mini" onClick={() => setUsagePanel(null)}>
+            <button className="mini" onClick={() => setUsageModalOpen(false)}>
               閉じる
             </button>
           </div>
@@ -891,6 +905,14 @@ export default function App() {
         <span>WSL: {distro}</span>
         {initInfo && <span>{initInfo.userAgent.split(" ")[0]}</span>}
         {activeThreadId && <span>Thread: {activeThreadId.slice(0, 13)}…</span>}
+        {usagePanel && (
+          <button className="usage-badge" onClick={() => void openUsagePanel()} title="使用量の詳細を表示">
+            <UsagePill label="P" pct={usagePanel.rateLimits.primary?.usedPercent} />
+            {usagePanel.rateLimits.secondary && (
+              <UsagePill label="S" pct={usagePanel.rateLimits.secondary?.usedPercent} />
+            )}
+          </button>
+        )}
         {activeTurnId && (
           <button className="stop" onClick={stop}>
             ■ Stop
@@ -898,6 +920,17 @@ export default function App() {
         )}
       </footer>
     </div>
+  );
+}
+
+function UsagePill({ label, pct }: { label: string; pct: number | undefined }) {
+  if (pct === undefined) return null;
+  const rounded = Math.round(pct);
+  const cls = rounded >= 90 ? "danger" : rounded >= 70 ? "warn" : "";
+  return (
+    <span className={`usage-pill ${cls}`}>
+      {label} {rounded}%
+    </span>
   );
 }
 

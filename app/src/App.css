@@ -49,6 +49,16 @@ body { background: var(--bg); color: var(--text); }
   background: var(--danger); color: #fff; border: none;
   padding: 3px 12px; border-radius: 4px; cursor: pointer;
 }
+.usage-badge {
+  display: flex; gap: 6px; background: transparent; border: none;
+  cursor: pointer; padding: 0; color: var(--muted);
+}
+.usage-pill {
+  font-size: 11px; padding: 1px 6px; border-radius: 3px;
+  background: var(--bg); border: 1px solid var(--border);
+}
+.usage-pill.warn { color: #b45309; border-color: #eab308; }
+.usage-pill.danger { color: #fff; background: var(--danger); border-color: var(--danger); }
 
 .banner {
   background: #fef2f2; color: #991b1b;
