@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import type {
   AgentMessageDelta,
   ApprovalDecision,
@@ -1000,13 +1002,22 @@ function TranscriptItem({ di }: { di: DisplayItem }) {
     }
     case "agentMessage": {
       const it = item as Extract<ThreadItem, { type: "agentMessage" }>;
-      return <div className="msg agent">{it.text || streamingText || ""}</div>;
+      const text = it.text || streamingText || "";
+      return (
+        <div className="msg agent md">
+          <ReactMarkdown remarkPlugins={[remarkGfm]}>{text}</ReactMarkdown>
+        </div>
+      );
     }
     case "reasoning": {
       const it = item as Extract<ThreadItem, { type: "reasoning" }>;
       const summary = it.summary?.join("\n") ?? "";
       if (!summary) return null;
-      return <div className="msg reasoning">{summary}</div>;
+      return (
+        <div className="msg reasoning md">
+          <ReactMarkdown remarkPlugins={[remarkGfm]}>{summary}</ReactMarkdown>
+        </div>
+      );
     }
     case "commandExecution": {
       const it = item as Extract<ThreadItem, { type: "commandExecution" }>;
