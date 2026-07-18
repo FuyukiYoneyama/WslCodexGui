@@ -105,6 +105,8 @@ export default function App() {
   const [usagePanel, setUsagePanel] = useState<GetAccountRateLimitsResponse | null>(null);
   const [usageModalOpen, setUsageModalOpen] = useState(false);
   const [pendingThreadId, setPendingThreadId] = useState<string | null>(null);
+  const [renamingThreadId, setRenamingThreadId] = useState<string | null>(null);
+  const [renameInput, setRenameInput] = useState("");
 
   // Refs mirroring state that event handlers need without re-subscribing.
   const activeThreadIdRef = useRef<string | null>(null);
@@ -465,6 +467,27 @@ export default function App() {
     await resumeThread(threadId);
   };
 
+  const startRenaming = (t: Thread) => {
+    setRenamingThreadId(t.id);
+    setRenameInput(t.name ?? t.preview ?? "");
+  };
+
+  const confirmRename = async () => {
+    const threadId = renamingThreadId;
+    const name = renameInput.trim();
+    setRenamingThreadId(null);
+    if (!threadId || !name) return;
+    try {
+      await invoke("rpc_request", {
+        method: "thread/name/set",
+        params: { threadId, name },
+      });
+      setThreads((prev) => prev.map((t) => (t.id === threadId ? { ...t, name } : t)));
+    } catch (e) {
+      setErrorBanner(`thread/name/set failed: ${e}`);
+    }
+  };
+
   const confirmPendingThreadConnect = async () => {
     const threadId = pendingThreadId;
     setPendingThreadId(null);
@@ -801,14 +824,45 @@ export default function App() {
             </h3>
             <ul>
               {threads.map((t) => (
-                <li key={t.id}>
-                  <button
-                    className={t.id === activeThreadId ? "active" : ""}
-                    onClick={() => openThread(t.id)}
-                    title={t.cwd}
-                  >
-                    {(t.name ?? t.preview ?? t.id).slice(0, 40) || "(empty)"}
-                  </button>
+                <li key={t.id} className="thread-row">
+                  {renamingThreadId === t.id ? (
+                    <input
+                      autoFocus
+                      className="rename-input"
+                      value={renameInput}
+                      onChange={(e) => setRenameInput(e.target.value)}
+                      onBlur={() => void confirmRename()}
+                      onKeyDown={(e) => {
+                        if (e.nativeEvent.isComposing) return;
+                        if (e.key === "Enter") {
+                          e.preventDefault();
+                          void confirmRename();
+                        } else if (e.key === "Escape") {
+                          setRenamingThreadId(null);
+                        }
+                      }}
+                    />
+                  ) : (
+                    <>
+                      <button
+                        className={t.id === activeThreadId ? "active" : ""}
+                        onClick={() => openThread(t.id)}
+                        title={t.cwd}
+                      >
+                        {(t.name ?? t.preview ?? t.id).slice(0, 40) || "(empty)"}
+                      </button>
+                      <button
+                        className="rename-btn"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          startRenaming(t);
+                        }}
+                        title="スレッド名を変更"
+                      >
+                        ✎
+                      </button>
+                    </>
+                  )}
                 </li>
               ))}
             </ul>

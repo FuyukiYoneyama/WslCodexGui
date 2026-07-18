@@ -107,6 +107,7 @@ body { background: var(--bg); color: var(--text); }
 }
 .project-actions .icon-btn:hover:not(:disabled) { background: var(--bg); }
 .threads ul { list-style: none; margin: 0; padding: 0; }
+.thread-row { display: flex; align-items: center; gap: 2px; }
 .threads li button {
   display: block; width: 100%; text-align: left;
   background: transparent; color: var(--text);
@@ -115,6 +116,16 @@ body { background: var(--bg); color: var(--text); }
 }
 .threads li button:hover { background: var(--bg); }
 .threads li button.active { background: var(--user-bubble); }
+.thread-row .rename-btn {
+  flex: 0 0 auto; width: auto; padding: 5px 6px; font-size: 11px;
+  opacity: 0; color: var(--muted);
+}
+.thread-row:hover .rename-btn { opacity: 1; }
+.thread-row .rename-input {
+  flex: 1 1 auto; padding: 4px 7px; font-size: 12px;
+  border: 1px solid var(--accent); border-radius: 4px;
+  background: var(--bg); color: var(--text);
+}
 
 /* --- chat --- */
 .chat { flex: 1 1 auto; display: flex; flex-direction: column; min-width: 0; }
