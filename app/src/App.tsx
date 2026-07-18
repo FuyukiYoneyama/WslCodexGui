@@ -351,6 +351,19 @@ export default function App() {
           t.items.map((item) => ({ key: `${t.id}:${item.id}`, item }))
         )
       );
+      // Reflect this thread's own workspace in the project selector, adding
+      // it to the list if it isn't a discovered/registered path yet.
+      if (res.thread.cwd) {
+        const cwd = res.thread.cwd;
+        setProjectCwd(cwd);
+        localStorage.setItem("projectCwd", cwd);
+        setProjectPaths((prev) => {
+          if (prev.includes(cwd)) return prev;
+          const next = [...prev, cwd].sort();
+          localStorage.setItem("projectPaths", JSON.stringify(next));
+          return next;
+        });
+      }
     } catch (e) {
       setErrorBanner(`thread/resume failed: ${e}`);
     }
