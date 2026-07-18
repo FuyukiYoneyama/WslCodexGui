@@ -17,6 +17,23 @@ import "./App.css";
 
 type ConnState = "disconnected" | "connecting" | "connected";
 
+// ENV-01 (spec 4.3): last confirmed-working values on this machine. Used as
+// the initial default only — still overridable and persisted per N-20/F-02a.
+const DEFAULT_CODEX_PATH = "/home/user/.nvm/versions/node/v22.22.2/bin/codex";
+const DEFAULT_PROJECT_PATH = "/home/user";
+const ADD_NEW_VALUE = "__add_new__";
+
+function loadProjectPaths(): string[] {
+  try {
+    const raw = localStorage.getItem("projectPaths");
+    const parsed = raw ? (JSON.parse(raw) as string[]) : [];
+    if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+  } catch {
+    // ignore malformed storage
+  }
+  return [DEFAULT_PROJECT_PATH];
+}
+
 interface DisplayItem {
   key: string;
   item: ThreadItem;
@@ -43,8 +60,15 @@ function decisionLabel(d: ApprovalDecision): string {
 
 export default function App() {
   const [distro, setDistro] = useState(() => localStorage.getItem("distro") ?? "Ubuntu-24.04");
-  const [codexPath, setCodexPath] = useState(() => localStorage.getItem("codexPath") ?? "");
-  const [projectCwd, setProjectCwd] = useState(() => localStorage.getItem("projectCwd") ?? "");
+  const [codexPath, setCodexPath] = useState(
+    () => localStorage.getItem("codexPath") ?? DEFAULT_CODEX_PATH
+  );
+  const [projectPaths, setProjectPaths] = useState<string[]>(loadProjectPaths);
+  const [projectCwd, setProjectCwd] = useState(
+    () => localStorage.getItem("projectCwd") ?? loadProjectPaths()[0]
+  );
+  const [addingPath, setAddingPath] = useState(false);
+  const [newPathInput, setNewPathInput] = useState("");
 
   const [connState, setConnState] = useState<ConnState>("disconnected");
   const [initInfo, setInitInfo] = useState<InitializeResponse | null>(null);
@@ -202,6 +226,12 @@ export default function App() {
 
   // --- actions ---
   const doConnect = async () => {
+    if (!codexPath.trim()) {
+      setErrorBanner(
+        "WSL内のcodex実行ファイルの絶対パスを入力してください。WSLターミナルで `which codex` を実行すると確認できます（例: /home/user/.nvm/versions/node/v22.22.2/bin/codex）。灰色の文字は入力例であり、値は未入力です。"
+      );
+      return;
+    }
     localStorage.setItem("distro", distro);
     localStorage.setItem("codexPath", codexPath);
     setConnState("connecting");
@@ -247,7 +277,7 @@ export default function App() {
 
   const newThread = async () => {
     if (!projectCwd.trim()) {
-      setErrorBanner("プロジェクトのWSLパスを入力してください（例: /home/user/src/myapp）");
+      setErrorBanner("プロジェクトのWSLパスを選択してください");
       return;
     }
     localStorage.setItem("projectCwd", projectCwd);
@@ -319,6 +349,34 @@ export default function App() {
     }
   };
 
+  // F-02a: registered project paths, persisted; "追加..." opens a free-text
+  // entry that appends to (and selects) the list rather than replacing it.
+  const onProjectSelectChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    if (e.target.value === ADD_NEW_VALUE) {
+      setAddingPath(true);
+      setNewPathInput("");
+      return;
+    }
+    setProjectCwd(e.target.value);
+    localStorage.setItem("projectCwd", e.target.value);
+  };
+
+  const confirmNewPath = () => {
+    const p = newPathInput.trim();
+    if (!p) {
+      setAddingPath(false);
+      return;
+    }
+    setProjectPaths((prev) => {
+      const next = prev.includes(p) ? prev : [...prev, p];
+      localStorage.setItem("projectPaths", JSON.stringify(next));
+      return next;
+    });
+    setProjectCwd(p);
+    localStorage.setItem("projectCwd", p);
+    setAddingPath(false);
+  };
+
   const approval = approvals[0];
   const approvalParams = (approval?.params ?? {}) as CommandApprovalParams;
   const decisions: ApprovalDecision[] =
@@ -364,7 +422,7 @@ export default function App() {
             {connState === "connected" ? (
               <button onClick={doDisconnect}>切断</button>
             ) : (
-              <button onClick={doConnect} disabled={connState === "connecting" || !codexPath.trim()}>
+              <button onClick={doConnect} disabled={connState === "connecting"}>
                 {connState === "connecting" ? "接続中…" : "接続"}
               </button>
             )}
@@ -374,13 +432,41 @@ export default function App() {
             <h3>プロジェクト</h3>
             <label>
               WSLパス
-              <input
-                value={projectCwd}
-                onChange={(e) => setProjectCwd(e.target.value)}
-                placeholder="/home/user/src/myapp"
-              />
+              {addingPath ? (
+                <div className="add-path-row">
+                  <input
+                    autoFocus
+                    value={newPathInput}
+                    onChange={(e) => setNewPathInput(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && !e.nativeEvent.isComposing) {
+                        e.preventDefault();
+                        confirmNewPath();
+                      } else if (e.key === "Escape") {
+                        setAddingPath(false);
+                      }
+                    }}
+                    placeholder="/home/user/src/myapp"
+                  />
+                  <button className="mini" onClick={confirmNewPath}>
+                    OK
+                  </button>
+                  <button className="mini" onClick={() => setAddingPath(false)}>
+                    ×
+                  </button>
+                </div>
+              ) : (
+                <select value={projectCwd} onChange={onProjectSelectChange}>
+                  {projectPaths.map((p) => (
+                    <option key={p} value={p}>
+                      {p}
+                    </option>
+                  ))}
+                  <option value={ADD_NEW_VALUE}>+ パスを追加…</option>
+                </select>
+              )}
             </label>
-            <button onClick={newThread} disabled={connState !== "connected"}>
+            <button onClick={newThread} disabled={connState !== "connected" || addingPath}>
               新しいスレッド
             </button>
           </section>
