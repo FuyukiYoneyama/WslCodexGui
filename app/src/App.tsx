@@ -5,6 +5,7 @@ import type {
   AgentMessageDelta,
   ApprovalDecision,
   CommandApprovalParams,
+  GetAccountRateLimitsResponse,
   InitializeResponse,
   ItemNotification,
   Model,
@@ -12,6 +13,8 @@ import type {
   ServerRequest,
   Thread,
   ThreadItem,
+  ThreadTokenUsage,
+  ThreadTokenUsageUpdated,
   TurnCompletedNotification,
 } from "./types";
 import "./App.css";
@@ -96,6 +99,8 @@ export default function App() {
   const [slashIndex, setSlashIndex] = useState(0);
   const [modelPicker, setModelPicker] = useState<Model[] | null>(null);
   const [modelOverride, setModelOverride] = useState<string | null>(null);
+  const [threadTokenUsage, setThreadTokenUsage] = useState<ThreadTokenUsage | null>(null);
+  const [usagePanel, setUsagePanel] = useState<GetAccountRateLimitsResponse | null>(null);
 
   // Refs mirroring state that event handlers need without re-subscribing.
   const activeThreadIdRef = useRef<string | null>(null);
@@ -243,6 +248,11 @@ export default function App() {
             }
             break;
           }
+          case "thread/tokenUsage/updated": {
+            const p = params as unknown as ThreadTokenUsageUpdated;
+            setThreadTokenUsage(p.tokenUsage);
+            break;
+          }
           case "error": {
             setErrorBanner(JSON.stringify(params));
             break;
@@ -326,6 +336,7 @@ export default function App() {
       })) as { thread: Thread };
       setActiveThreadId(res.thread.id);
       setActiveTurnId(null);
+      setThreadTokenUsage(null); // stale until the next tokenUsage/updated for this thread
       setItems(
         res.thread.turns.flatMap((t) =>
           t.items.map((item) => ({ key: `${t.id}:${item.id}`, item }))
@@ -350,6 +361,7 @@ export default function App() {
       })) as { thread: Thread };
       setActiveThreadId(res.thread.id);
       setItems([]);
+      setThreadTokenUsage(null);
       await refreshThreads();
     } catch (e) {
       setErrorBanner(`thread/start failed: ${e}`);
@@ -420,6 +432,18 @@ export default function App() {
     setModelPicker(null);
   };
 
+  const openUsagePanel = async () => {
+    try {
+      const res = await invoke<GetAccountRateLimitsResponse>("rpc_request", {
+        method: "account/rateLimits/read",
+        params: undefined,
+      });
+      setUsagePanel(res);
+    } catch (e) {
+      setErrorBanner(`account/rateLimits/read failed: ${e}`);
+    }
+  };
+
   // "/" command palette. Runs a local GUI action; nothing here is text sent
   // to the model. Selecting /model opens a second-level list (modelPicker)
   // instead of executing immediately.
@@ -452,6 +476,11 @@ export default function App() {
       name: "stop",
       description: "実行中のturnを中断する（Stopボタンと同じ）",
       run: () => void stop(),
+    },
+    {
+      name: "usage",
+      description: "レート制限・トークン使用量を表示",
+      run: () => void openUsagePanel(),
     },
     {
       name: "help",
@@ -757,6 +786,32 @@ export default function App() {
         </div>
       )}
 
+      {usagePanel && (
+        <div className="modal-backdrop" onClick={() => setUsagePanel(null)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <h3>使用量</h3>
+            <UsageWindow label="Primary" w={usagePanel.rateLimits.primary} />
+            <UsageWindow label="Secondary" w={usagePanel.rateLimits.secondary} />
+            {threadTokenUsage && (
+              <>
+                <p className="usage-subhead">現在のスレッド</p>
+                <ul className="usage-tokens">
+                  <li>合計: {threadTokenUsage.total.totalTokens.toLocaleString()} tokens</li>
+                  <li>入力: {threadTokenUsage.total.inputTokens.toLocaleString()}（キャッシュ {threadTokenUsage.total.cachedInputTokens.toLocaleString()}）</li>
+                  <li>出力: {threadTokenUsage.total.outputTokens.toLocaleString()}</li>
+                  {threadTokenUsage.modelContextWindow && (
+                    <li>コンテキストウィンドウ: {threadTokenUsage.modelContextWindow.toLocaleString()}</li>
+                  )}
+                </ul>
+              </>
+            )}
+            <button className="mini" onClick={() => setUsagePanel(null)}>
+              閉じる
+            </button>
+          </div>
+        </div>
+      )}
+
       {stderrLog.length > 0 && (
         <details className="stderr">
           <summary>サーバー診断ログ ({stderrLog.length})</summary>
@@ -776,6 +831,27 @@ export default function App() {
           </button>
         )}
       </footer>
+    </div>
+  );
+}
+
+function UsageWindow({ label, w }: { label: string; w: import("./types").RateLimitWindow | null }) {
+  if (!w) return null;
+  const pct = Math.round(w.usedPercent);
+  const resets = w.resetsAt ? new Date(w.resetsAt * 1000).toLocaleString() : null;
+  return (
+    <div className="usage-window">
+      <div className="usage-window-head">
+        <span>
+          {label}
+          {w.windowDurationMins ? `（${Math.round(w.windowDurationMins / 60)}時間窓）` : ""}
+        </span>
+        <span>{pct}%</span>
+      </div>
+      <div className="usage-bar">
+        <div className={`usage-bar-fill ${pct >= 90 ? "danger" : pct >= 70 ? "warn" : ""}`} style={{ width: `${Math.min(pct, 100)}%` }} />
+      </div>
+      {resets && <p className="usage-reset">リセット: {resets}</p>}
     </div>
   );
 }

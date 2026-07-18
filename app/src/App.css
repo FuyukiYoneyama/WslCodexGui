@@ -159,6 +159,17 @@ body { background: var(--bg); color: var(--text); }
 }
 .model-list .desc { font-size: 11px; color: var(--muted); }
 
+.usage-window { margin: 10px 0; }
+.usage-window-head { display: flex; justify-content: space-between; font-size: 12px; margin-bottom: 4px; }
+.usage-bar { height: 8px; border-radius: 4px; background: var(--bg); border: 1px solid var(--border); overflow: hidden; }
+.usage-bar-fill { height: 100%; background: var(--accent); }
+.usage-bar-fill.warn { background: #eab308; }
+.usage-bar-fill.danger { background: var(--danger); }
+.usage-reset { margin: 3px 0 0; font-size: 11px; color: var(--muted); }
+.usage-subhead { margin: 14px 0 4px; font-size: 12px; font-weight: 600; color: var(--muted); }
+.usage-tokens { list-style: none; margin: 0; padding: 0; font-size: 12px; }
+.usage-tokens li { padding: 2px 0; }
+
 .composer {
   flex: 0 0 auto; display: flex; gap: 8px;
   padding: 10px 16px; background: var(--panel);

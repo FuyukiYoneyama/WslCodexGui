@@ -118,3 +118,44 @@ export interface Model {
   hidden: boolean;
   isDefault: boolean;
 }
+
+// --- usage / rate limits (used by the /usage slash command) ---
+
+export interface RateLimitWindow {
+  usedPercent: number;
+  windowDurationMins: number | null;
+  resetsAt: number | null;
+}
+
+export interface RateLimitSnapshot {
+  limitId: string | null;
+  limitName: string | null;
+  primary: RateLimitWindow | null;
+  secondary: RateLimitWindow | null;
+  planType: string | null;
+}
+
+export interface GetAccountRateLimitsResponse {
+  rateLimits: RateLimitSnapshot;
+  rateLimitsByLimitId: Record<string, RateLimitSnapshot> | null;
+}
+
+export interface TokenUsageBreakdown {
+  totalTokens: number;
+  inputTokens: number;
+  cachedInputTokens: number;
+  outputTokens: number;
+  reasoningOutputTokens: number;
+}
+
+export interface ThreadTokenUsage {
+  total: TokenUsageBreakdown;
+  last: TokenUsageBreakdown;
+  modelContextWindow: number | null;
+}
+
+export interface ThreadTokenUsageUpdated {
+  threadId: string;
+  turnId: string;
+  tokenUsage: ThreadTokenUsage;
+}
