@@ -42,6 +42,7 @@ body { background: var(--bg); color: var(--text); }
 .dot { width: 9px; height: 9px; border-radius: 50%; background: #999; }
 .dot.connected { background: #16a34a; }
 .dot.connecting { background: #eab308; }
+.dot.disconnecting { background: #f97316; }
 .statusbar .stop {
   margin-left: auto;
   background: var(--danger); color: #fff; border: none;

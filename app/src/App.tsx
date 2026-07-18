@@ -19,7 +19,7 @@ import type {
 } from "./types";
 import "./App.css";
 
-type ConnState = "disconnected" | "connecting" | "connected";
+type ConnState = "disconnected" | "connecting" | "connected" | "disconnecting";
 
 // ENV-01 (spec 4.3): last confirmed-working values on this machine. Used as
 // the initial default only — still overridable and persisted per N-20/F-02a.
@@ -319,12 +319,18 @@ export default function App() {
   };
 
   const doDisconnect = async () => {
-    await invoke("disconnect");
-    setConnState("disconnected");
-    setActiveThreadId(null);
-    setActiveTurnId(null);
-    setItems([]);
-    setApprovals([]);
+    setConnState("disconnecting");
+    try {
+      await invoke("disconnect");
+    } catch (e) {
+      setErrorBanner(`切断処理でエラー: ${e}`);
+    } finally {
+      setConnState("disconnected");
+      setActiveThreadId(null);
+      setActiveTurnId(null);
+      setItems([]);
+      setApprovals([]);
+    }
   };
 
   const openThread = async (threadId: string) => {
@@ -586,8 +592,10 @@ export default function App() {
         <aside className="sidebar">
           <section>
             <h3>接続</h3>
-            {connState === "connected" ? (
-              <button onClick={doDisconnect}>切断</button>
+            {connState === "connected" || connState === "disconnecting" ? (
+              <button onClick={doDisconnect} disabled={connState === "disconnecting"}>
+                {connState === "disconnecting" ? "切断中…" : "切断"}
+              </button>
             ) : (
               <>
                 <label>
@@ -821,7 +829,13 @@ export default function App() {
 
       <footer className="statusbar">
         <span className={`dot ${connState}`} />
-        <span>{connState === "connected" ? "Codex server connected (owned)" : connState}</span>
+        <span>
+          {connState === "connected"
+            ? "Codex server connected (owned)"
+            : connState === "disconnecting"
+              ? "切断中…"
+              : connState}
+        </span>
         <span>WSL: {distro}</span>
         {initInfo && <span>{initInfo.userAgent.split(" ")[0]}</span>}
         {activeThreadId && <span>Thread: {activeThreadId.slice(0, 13)}…</span>}
