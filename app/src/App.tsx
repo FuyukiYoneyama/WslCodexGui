@@ -1023,20 +1023,22 @@ export default function App() {
   );
 }
 
+// Codex公式GUI（利用制限画面）は「残り○%」表記なので、それに合わせる
+// （APIが返すのはusedPercentなので、表示直前に反転する）。
 function UsagePill({ label, pct }: { label: string; pct: number | undefined }) {
   if (pct === undefined) return null;
-  const rounded = Math.round(pct);
-  const cls = rounded >= 90 ? "danger" : rounded >= 70 ? "warn" : "";
+  const remaining = Math.round(100 - pct);
+  const cls = remaining <= 10 ? "danger" : remaining <= 30 ? "warn" : "";
   return (
     <span className={`usage-pill ${cls}`}>
-      {label} {rounded}%
+      {label} 残{remaining}%
     </span>
   );
 }
 
 function UsageWindow({ label, w }: { label: string; w: import("./types").RateLimitWindow | null }) {
   if (!w) return null;
-  const pct = Math.round(w.usedPercent);
+  const remaining = Math.round(100 - w.usedPercent);
   const resets = w.resetsAt ? new Date(w.resetsAt * 1000).toLocaleString() : null;
   return (
     <div className="usage-window">
@@ -1045,10 +1047,13 @@ function UsageWindow({ label, w }: { label: string; w: import("./types").RateLim
           {label}
           {w.windowDurationMins ? `（${Math.round(w.windowDurationMins / 60)}時間窓）` : ""}
         </span>
-        <span>{pct}%</span>
+        <span>残り{remaining}%</span>
       </div>
       <div className="usage-bar">
-        <div className={`usage-bar-fill ${pct >= 90 ? "danger" : pct >= 70 ? "warn" : ""}`} style={{ width: `${Math.min(pct, 100)}%` }} />
+        <div
+          className={`usage-bar-fill ${remaining <= 10 ? "danger" : remaining <= 30 ? "warn" : ""}`}
+          style={{ width: `${Math.max(0, Math.min(remaining, 100))}%` }}
+        />
       </div>
       {resets && <p className="usage-reset">リセット: {resets}</p>}
     </div>
