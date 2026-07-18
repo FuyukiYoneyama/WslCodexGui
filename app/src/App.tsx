@@ -434,18 +434,6 @@ export default function App() {
 
   return (
     <div className="app">
-      <header className="statusbar">
-        <span className={`dot ${connState}`} />
-        <span>{connState === "connected" ? "Codex server connected (owned)" : connState}</span>
-        <span>WSL: {distro}</span>
-        {initInfo && <span>{initInfo.userAgent.split(" ")[0]}</span>}
-        {activeThreadId && <span>Thread: {activeThreadId.slice(0, 13)}…</span>}
-        {activeTurnId && (
-          <button className="stop" onClick={stop}>
-            ■ Stop
-          </button>
-        )}
-      </header>
 
       {errorBanner && (
         <div className="banner" onClick={() => setErrorBanner(null)}>
@@ -613,6 +601,19 @@ export default function App() {
           <pre>{stderrLog.join("\n")}</pre>
         </details>
       )}
+
+      <footer className="statusbar">
+        <span className={`dot ${connState}`} />
+        <span>{connState === "connected" ? "Codex server connected (owned)" : connState}</span>
+        <span>WSL: {distro}</span>
+        {initInfo && <span>{initInfo.userAgent.split(" ")[0]}</span>}
+        {activeThreadId && <span>Thread: {activeThreadId.slice(0, 13)}…</span>}
+        {activeTurnId && (
+          <button className="stop" onClick={stop}>
+            ■ Stop
+          </button>
+        )}
+      </footer>
     </div>
   );
 }
