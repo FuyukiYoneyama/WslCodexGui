@@ -428,6 +428,22 @@ export default function App() {
     }
   };
 
+  const openTerminalHere = async () => {
+    try {
+      await invoke("open_wsl_terminal", { distro, path: projectCwd });
+    } catch (e) {
+      setErrorBanner(`ターミナルを開けませんでした: ${e}`);
+    }
+  };
+
+  const openExplorerHere = async () => {
+    try {
+      await invoke("open_in_explorer", { distro, path: projectCwd });
+    } catch (e) {
+      setErrorBanner(`エクスプローラーを開けませんでした: ${e}`);
+    }
+  };
+
   const send = async () => {
     const text = input.trim();
     if (!text || !activeThreadId || activeTurnId) return;
@@ -714,9 +730,27 @@ export default function App() {
                 </select>
               )}
             </label>
-            <button onClick={newThread} disabled={connState !== "connected" || addingRoot}>
-              新しいスレッド
-            </button>
+            <div className="project-actions">
+              <button onClick={newThread} disabled={connState !== "connected" || addingRoot}>
+                新しいスレッド
+              </button>
+              <button
+                className="icon-btn"
+                onClick={() => void openTerminalHere()}
+                disabled={!projectCwd || addingRoot}
+                title="このWSLパスでターミナルを開く"
+              >
+                ⌨
+              </button>
+              <button
+                className="icon-btn"
+                onClick={() => void openExplorerHere()}
+                disabled={!projectCwd || addingRoot}
+                title="このWSLパスをエクスプローラーで開く"
+              >
+                📁
+              </button>
+            </div>
           </section>
 
           <section className="threads">

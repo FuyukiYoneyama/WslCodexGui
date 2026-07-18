@@ -133,6 +133,36 @@ async fn list_directories(distro: String, root: String, max_depth: u32) -> Resul
     Ok(dirs)
 }
 
+/// Open an interactive WSL shell at `path` in its own console window.
+/// `cmd /c start` detaches the window from this process; `--cd` is a
+/// wsl.exe-native flag (no shell string is built from `path`).
+#[tauri::command]
+fn open_wsl_terminal(distro: String, path: String) -> Result<(), String> {
+    std::process::Command::new("cmd.exe")
+        .args(["/c", "start", "", "wsl.exe", "-d", &distro, "--cd", &path])
+        .spawn()
+        .map_err(|e| format!("failed to open WSL terminal: {e}"))?;
+    Ok(())
+}
+
+/// Open `path` (a Linux path inside `distro`) in Windows Explorer via the
+/// \\wsl.localhost\<distro>\... UNC form (spec 7.1).
+#[tauri::command]
+fn open_in_explorer(distro: String, path: String) -> Result<(), String> {
+    let win_path = format!(
+        "\\\\wsl.localhost\\{}\\{}",
+        distro,
+        path.trim_start_matches('/').replace('/', "\\")
+    );
+    // explorer.exe frequently reports a non-zero exit status even on
+    // success; only the spawn itself is a meaningful failure signal here.
+    std::process::Command::new("explorer.exe")
+        .arg(&win_path)
+        .spawn()
+        .map_err(|e| format!("failed to open Explorer: {e}"))?;
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -145,7 +175,9 @@ pub fn run() {
             disconnect,
             rpc_request,
             respond_server_request,
-            list_directories
+            list_directories,
+            open_wsl_terminal,
+            open_in_explorer
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
