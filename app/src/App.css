@@ -77,8 +77,11 @@ body { background: var(--bg); color: var(--text); }
   width: 260px; flex: 0 0 auto; overflow-y: auto;
   background: var(--panel); border-right: 1px solid var(--border);
   padding: 10px;
+  display: flex; flex-direction: column; min-height: 0;
 }
-.sidebar section { margin-bottom: 18px; }
+.sidebar section { margin-bottom: 18px; flex: 0 0 auto; }
+.sidebar section.threads { flex: 1 1 auto; min-height: 60px; overflow-y: auto; }
+.sidebar section:last-child { margin-top: auto; margin-bottom: 0; }
 .sidebar h3 { margin: 0 0 6px; font-size: 12px; text-transform: uppercase; color: var(--muted); }
 .sidebar label { display: block; font-size: 11px; color: var(--muted); margin-bottom: 6px; }
 .sidebar input, .sidebar select {
