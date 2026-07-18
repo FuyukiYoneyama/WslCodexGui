@@ -121,6 +121,44 @@ body { background: var(--bg); color: var(--text); }
 }
 @keyframes pulse { 50% { opacity: 0.4; } }
 
+.composer-wrap { position: relative; flex: 0 0 auto; }
+
+.model-badge {
+  display: flex; align-items: center; gap: 6px;
+  padding: 3px 16px; font-size: 11px; color: var(--muted);
+  background: var(--panel); border-top: 1px solid var(--border);
+}
+.model-badge button.mini { padding: 0 6px; }
+
+.slash-menu {
+  position: absolute; bottom: 100%; left: 16px; right: 16px;
+  margin: 0 0 4px; padding: 4px; list-style: none;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+  box-shadow: 0 -4px 16px rgba(0,0,0,0.15);
+  max-height: 220px; overflow-y: auto;
+}
+.slash-menu li {
+  display: flex; align-items: baseline; gap: 10px;
+  padding: 6px 10px; border-radius: 5px; cursor: pointer;
+}
+.slash-menu li.active, .slash-menu li:hover { background: var(--user-bubble); }
+.slash-menu li code { font-family: Consolas, monospace; font-size: 12px; color: var(--accent); flex: 0 0 auto; }
+.slash-menu li span { font-size: 12px; color: var(--muted); }
+
+.model-list { list-style: none; margin: 10px 0; padding: 0; max-height: 320px; overflow-y: auto; }
+.model-list li { margin-bottom: 4px; }
+.model-list button {
+  width: 100%; text-align: left; display: flex; flex-direction: column; gap: 2px;
+  padding: 8px 12px; border: 1px solid var(--border); border-radius: 6px;
+  background: var(--bg); color: var(--text); cursor: pointer;
+}
+.model-list button:hover { background: var(--user-bubble); }
+.model-list .tag {
+  display: inline-block; margin-left: 6px; padding: 0 6px; font-size: 10px;
+  background: var(--accent); color: #fff; border-radius: 3px;
+}
+.model-list .desc { font-size: 11px; color: var(--muted); }
+
 .composer {
   flex: 0 0 auto; display: flex; gap: 8px;
   padding: 10px 16px; background: var(--panel);

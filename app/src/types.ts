@@ -107,3 +107,14 @@ export interface ServerRequest {
   method: string;
   params: unknown;
 }
+
+// --- model/list (used by the /model slash command) ---
+
+export interface Model {
+  id: string;
+  model: string;
+  displayName: string;
+  description: string;
+  hidden: boolean;
+  isDefault: boolean;
+}

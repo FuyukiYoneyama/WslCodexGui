@@ -7,6 +7,7 @@ import type {
   CommandApprovalParams,
   InitializeResponse,
   ItemNotification,
+  Model,
   Notification,
   ServerRequest,
   Thread,
@@ -89,6 +90,12 @@ export default function App() {
   const [input, setInput] = useState("");
   const [errorBanner, setErrorBanner] = useState<string | null>(null);
   const [stderrLog, setStderrLog] = useState<string[]>([]);
+
+  // "/" command palette (composer autocomplete).
+  const [slashOpen, setSlashOpen] = useState(false);
+  const [slashIndex, setSlashIndex] = useState(0);
+  const [modelPicker, setModelPicker] = useState<Model[] | null>(null);
+  const [modelOverride, setModelOverride] = useState<string | null>(null);
 
   // Refs mirroring state that event handlers need without re-subscribing.
   const activeThreadIdRef = useRef<string | null>(null);
@@ -361,6 +368,7 @@ export default function App() {
         params: {
           threadId: activeThreadId,
           input: [{ type: "text", text, text_elements: [] }],
+          ...(modelOverride ? { model: modelOverride } : {}),
         },
       });
     } catch (e) {
@@ -395,12 +403,116 @@ export default function App() {
     }
   };
 
-  // N-05: never send while IME composition is active.
+  const openModelPicker = async () => {
+    try {
+      const res = await invoke<{ data: Model[] }>("rpc_request", {
+        method: "model/list",
+        params: {},
+      });
+      setModelPicker(res.data.filter((m) => !m.hidden));
+    } catch (e) {
+      setErrorBanner(`model/list failed: ${e}`);
+    }
+  };
+
+  const pickModel = (m: Model) => {
+    setModelOverride(m.model);
+    setModelPicker(null);
+  };
+
+  // "/" command palette. Runs a local GUI action; nothing here is text sent
+  // to the model. Selecting /model opens a second-level list (modelPicker)
+  // instead of executing immediately.
+  const slashCommands: { name: string; description: string; run: () => void }[] = [
+    {
+      name: "new",
+      description: "選択中のプロジェクトで新しいスレッドを作成",
+      run: () => void newThread(),
+    },
+    {
+      name: "compact",
+      description: "現在のスレッドの会話を要約して圧縮する",
+      run: () => {
+        if (!activeThreadId) {
+          setErrorBanner("スレッドが選択されていません");
+          return;
+        }
+        void invoke("rpc_request", {
+          method: "thread/compact/start",
+          params: { threadId: activeThreadId },
+        }).catch((e) => setErrorBanner(`thread/compact/start failed: ${e}`));
+      },
+    },
+    {
+      name: "model",
+      description: "使用するモデルを選択する",
+      run: () => void openModelPicker(),
+    },
+    {
+      name: "stop",
+      description: "実行中のturnを中断する（Stopボタンと同じ）",
+      run: () => void stop(),
+    },
+    {
+      name: "help",
+      description: "利用可能なコマンド一覧を表示",
+      run: () => setErrorBanner(`利用可能: ${slashCommands.map((c) => "/" + c.name).join("  ")}`),
+    },
+  ];
+
+  const slashMatch = /^\/([a-zA-Z-]*)$/.exec(input);
+  const slashQuery = slashMatch?.[1]?.toLowerCase() ?? null;
+  const filteredCommands =
+    slashQuery === null
+      ? []
+      : slashCommands.filter((c) => c.name.startsWith(slashQuery));
+
+  const runSlashCommand = (cmd: { run: () => void }) => {
+    cmd.run();
+    setInput("");
+    setSlashOpen(false);
+    setSlashIndex(0);
+  };
+
+  // N-05: never send/navigate while IME composition is active.
   const onInputKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+    if (e.nativeEvent.isComposing) return;
+
+    if (slashOpen && filteredCommands.length > 0) {
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        setSlashIndex((i) => (i + 1) % filteredCommands.length);
+        return;
+      }
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        setSlashIndex((i) => (i - 1 + filteredCommands.length) % filteredCommands.length);
+        return;
+      }
+      if (e.key === "Tab" || e.key === "Enter") {
+        e.preventDefault();
+        runSlashCommand(filteredCommands[slashIndex]);
+        return;
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        setSlashOpen(false);
+        return;
+      }
+    }
+
+    if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       void send();
     }
+  };
+
+  const onInputChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    const value = e.target.value;
+    setInput(value);
+    const open = /^\/[a-zA-Z-]*$/.test(value);
+    setSlashOpen(open);
+    if (open) setSlashIndex(0);
   };
 
   // F-02a: the dropdown lists roots + their discovered subdirectories.
@@ -551,22 +663,50 @@ export default function App() {
             ))}
             {activeTurnId && <div className="working">Codex is working…</div>}
           </div>
-          <div className="composer">
-            <textarea
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={onInputKeyDown}
-              placeholder={
-                activeThreadId
-                  ? "メッセージを入力（Enterで送信 / Shift+Enterで改行）"
-                  : "先にスレッドを選択または作成してください"
-              }
-              disabled={connState !== "connected" || !activeThreadId || !!activeTurnId}
-              rows={3}
-            />
-            <button onClick={send} disabled={!input.trim() || !activeThreadId || !!activeTurnId}>
-              送信
-            </button>
+          <div className="composer-wrap">
+            {modelOverride && (
+              <div className="model-badge">
+                Model: {modelOverride}
+                <button className="mini" onClick={() => setModelOverride(null)}>
+                  ×
+                </button>
+              </div>
+            )}
+            {slashOpen && filteredCommands.length > 0 && (
+              <ul className="slash-menu">
+                {filteredCommands.map((c, i) => (
+                  <li
+                    key={c.name}
+                    className={i === slashIndex ? "active" : ""}
+                    onMouseDown={(e) => {
+                      e.preventDefault();
+                      runSlashCommand(c);
+                    }}
+                    onMouseEnter={() => setSlashIndex(i)}
+                  >
+                    <code>/{c.name}</code>
+                    <span>{c.description}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
+            <div className="composer">
+              <textarea
+                value={input}
+                onChange={onInputChange}
+                onKeyDown={onInputKeyDown}
+                placeholder={
+                  activeThreadId
+                    ? "メッセージを入力（Enterで送信 / Shift+Enterで改行 / \"/\"でコマンド）"
+                    : "先にスレッドを選択または作成してください"
+                }
+                disabled={connState !== "connected" || !activeThreadId || !!activeTurnId}
+                rows={3}
+              />
+              <button onClick={send} disabled={!input.trim() || !activeThreadId || !!activeTurnId}>
+                送信
+              </button>
+            </div>
           </div>
         </main>
       </div>
@@ -591,6 +731,28 @@ export default function App() {
               ))}
             </div>
             {approvals.length > 1 && <p className="queued">他に{approvals.length - 1}件の承認待ちがあります</p>}
+          </div>
+        </div>
+      )}
+
+      {modelPicker && (
+        <div className="modal-backdrop" onClick={() => setModelPicker(null)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <h3>モデルを選択</h3>
+            <ul className="model-list">
+              {modelPicker.map((m) => (
+                <li key={m.id}>
+                  <button onClick={() => pickModel(m)}>
+                    <strong>{m.displayName}</strong>
+                    {m.isDefault && <span className="tag">既定</span>}
+                    <span className="desc">{m.description}</span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+            <button className="mini" onClick={() => setModelPicker(null)}>
+              閉じる
+            </button>
           </div>
         </div>
       )}
