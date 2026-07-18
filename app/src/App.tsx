@@ -457,24 +457,26 @@ export default function App() {
         <aside className="sidebar">
           <section>
             <h3>接続</h3>
-            <label>
-              WSLディストリ
-              <input value={distro} onChange={(e) => setDistro(e.target.value)} />
-            </label>
-            <label>
-              codex絶対パス（WSL内）
-              <input
-                value={codexPath}
-                onChange={(e) => setCodexPath(e.target.value)}
-                placeholder="/home/user/.nvm/.../bin/codex"
-              />
-            </label>
             {connState === "connected" ? (
               <button onClick={doDisconnect}>切断</button>
             ) : (
-              <button onClick={doConnect} disabled={connState === "connecting"}>
-                {connState === "connecting" ? "接続中…" : "接続"}
-              </button>
+              <>
+                <label>
+                  WSLディストリ
+                  <input value={distro} onChange={(e) => setDistro(e.target.value)} />
+                </label>
+                <label>
+                  codex絶対パス（WSL内）
+                  <input
+                    value={codexPath}
+                    onChange={(e) => setCodexPath(e.target.value)}
+                    placeholder="/home/user/.nvm/.../bin/codex"
+                  />
+                </label>
+                <button onClick={doConnect} disabled={connState === "connecting"}>
+                  {connState === "connecting" ? "接続中…" : "接続"}
+                </button>
+              </>
             )}
           </section>
 
