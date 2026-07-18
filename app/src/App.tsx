@@ -722,33 +722,6 @@ export default function App() {
       <div className="body">
         <aside className="sidebar">
           <section>
-            <h3>接続</h3>
-            {connState === "connected" || connState === "disconnecting" ? (
-              <button onClick={doDisconnect} disabled={connState === "disconnecting"}>
-                {connState === "disconnecting" ? "切断中…" : "切断"}
-              </button>
-            ) : (
-              <>
-                <label>
-                  WSLディストリ
-                  <input value={distro} onChange={(e) => setDistro(e.target.value)} />
-                </label>
-                <label>
-                  codex絶対パス（WSL内）
-                  <input
-                    value={codexPath}
-                    onChange={(e) => setCodexPath(e.target.value)}
-                    placeholder="/home/user/.nvm/.../bin/codex"
-                  />
-                </label>
-                <button onClick={doConnect} disabled={connState === "connecting"}>
-                  {connState === "connecting" ? "接続中…" : "接続"}
-                </button>
-              </>
-            )}
-          </section>
-
-          <section>
             <h3>
               プロジェクト
               <button
@@ -839,6 +812,33 @@ export default function App() {
                 </li>
               ))}
             </ul>
+          </section>
+
+          <section>
+            <h3>接続</h3>
+            {connState === "connected" || connState === "disconnecting" ? (
+              <button onClick={doDisconnect} disabled={connState === "disconnecting"}>
+                {connState === "disconnecting" ? "切断中…" : "切断"}
+              </button>
+            ) : (
+              <>
+                <label>
+                  WSLディストリ
+                  <input value={distro} onChange={(e) => setDistro(e.target.value)} />
+                </label>
+                <label>
+                  codex絶対パス（WSL内）
+                  <input
+                    value={codexPath}
+                    onChange={(e) => setCodexPath(e.target.value)}
+                    placeholder="/home/user/.nvm/.../bin/codex"
+                  />
+                </label>
+                <button onClick={doConnect} disabled={connState === "connecting"}>
+                  {connState === "connecting" ? "接続中…" : "接続"}
+                </button>
+              </>
+            )}
           </section>
         </aside>
 
