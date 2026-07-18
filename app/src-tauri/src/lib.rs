@@ -163,6 +163,73 @@ fn open_in_explorer(distro: String, path: String) -> Result<(), String> {
     Ok(())
 }
 
+/// Best-effort resolution of a `net use`-mapped drive letter (e.g. "V") back
+/// to its UNC target, by parsing `net use` output for a line naming that
+/// drive. Returns None on any parse/exec failure rather than erroring —
+/// callers fall back to treating the path as an ordinary local drive.
+fn resolve_drive_mapping(drive: &str) -> Option<String> {
+    let output = std::process::Command::new("cmd.exe")
+        .args(["/c", "net", "use"])
+        .output()
+        .ok()?;
+    let text = String::from_utf8_lossy(&output.stdout);
+    let needle = format!("{}:", drive.to_uppercase());
+    for line in text.lines() {
+        let upper = line.to_uppercase();
+        if !upper.contains(&needle) {
+            continue;
+        }
+        if let Some(idx) = line.find("\\\\") {
+            if let Some(unc) = line[idx..].split_whitespace().next() {
+                return Some(unc.to_string());
+            }
+        }
+    }
+    None
+}
+
+/// Drag-and-drop support (composer): convert a Windows path (as delivered by
+/// the OS file-drop event) to the corresponding WSL Linux path.
+///  - `\\wsl.localhost\<distro>\...` / `\\wsl$\<distro>\...` -> `/...`
+///  - a drive letter that `net use` maps to one of the above -> `/...`
+///  - any other local drive letter -> `/mnt/<letter>/...` (WSL's own
+///    auto-mount convention for the Windows filesystem)
+#[tauri::command]
+fn windows_path_to_wsl(path: String) -> Result<String, String> {
+    let normalized = path.replace('/', "\\");
+
+    let strip_wsl_unc = |s: &str| -> Option<String> {
+        for prefix in ["\\\\wsl.localhost\\", "\\\\wsl$\\"] {
+            if let Some(rest) = s.strip_prefix(prefix) {
+                let tail = rest.splitn(2, '\\').nth(1).unwrap_or("");
+                return Some(format!("/{}", tail.replace('\\', "/")));
+            }
+        }
+        None
+    };
+
+    if let Some(p) = strip_wsl_unc(&normalized) {
+        return Ok(p);
+    }
+
+    if normalized.len() >= 2 && normalized.as_bytes()[1] == b':' {
+        let drive = normalized[0..1].to_uppercase();
+        let rest = &normalized[2..]; // e.g. "\home\user\file.md"
+
+        if let Some(unc) = resolve_drive_mapping(&drive) {
+            let combined = format!("{}{}", unc.trim_end_matches('\\'), rest);
+            if let Some(p) = strip_wsl_unc(&combined) {
+                return Ok(p);
+            }
+        }
+
+        let mnt_rest = rest.trim_start_matches('\\').replace('\\', "/");
+        return Ok(format!("/mnt/{}/{}", drive.to_lowercase(), mnt_rest));
+    }
+
+    Err(format!("unrecognized Windows path: {path}"))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -177,7 +244,8 @@ pub fn run() {
             respond_server_request,
             list_directories,
             open_wsl_terminal,
-            open_in_explorer
+            open_in_explorer,
+            windows_path_to_wsl
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -138,6 +138,70 @@ export default function App() {
     if (el) el.scrollTop = el.scrollHeight;
   }, [items, activeTurnId]);
 
+  // Drag-and-drop from Explorer: convert dropped Windows paths to WSL paths
+  // (windows_path_to_wsl) and insert them into the composer. Tauri's OS-level
+  // drag-drop only reports a cursor position, not the DOM target, so we test
+  // that position against the composer's own bounding box.
+  const composerWrapRef = useRef<HTMLDivElement>(null);
+  const [dragOver, setDragOver] = useState(false);
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+
+    // event.position is in physical pixels; getBoundingClientRect() is in
+    // logical/CSS pixels, so they only line up 1:1 without DPI scaling.
+    let scaleFactor = 1;
+
+    const isOverComposer = (x: number, y: number) => {
+      const el = composerWrapRef.current;
+      if (!el) return false;
+      const r = el.getBoundingClientRect();
+      const lx = x / scaleFactor;
+      const ly = y / scaleFactor;
+      return lx >= r.left && lx <= r.right && ly >= r.top && ly <= r.bottom;
+    };
+
+    (async () => {
+      const { getCurrentWindow } = await import("@tauri-apps/api/window");
+      scaleFactor = await getCurrentWindow().scaleFactor();
+      const { getCurrentWebview } = await import("@tauri-apps/api/webview");
+      const un = await getCurrentWebview().onDragDropEvent((event) => {
+        const p = event.payload;
+        if (p.type === "enter" || p.type === "over") {
+          setDragOver(isOverComposer(p.position.x, p.position.y));
+          return;
+        }
+        if (p.type === "leave") {
+          setDragOver(false);
+          return;
+        }
+        if (p.type === "drop") {
+          setDragOver(false);
+          if (!isOverComposer(p.position.x, p.position.y)) return;
+          void (async () => {
+            const wslPaths: string[] = [];
+            for (const winPath of p.paths) {
+              try {
+                wslPaths.push(await invoke<string>("windows_path_to_wsl", { path: winPath }));
+              } catch (e) {
+                setErrorBanner(`パス変換に失敗しました（${winPath}）: ${e}`);
+              }
+            }
+            if (wslPaths.length === 0) return;
+            setInput((prev) => (prev ? `${prev} ${wslPaths.join(" ")}` : wslPaths.join(" ")));
+          })();
+        }
+      });
+      if (cancelled) un();
+      else unlisten = un;
+    })();
+
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, []);
+
   const refreshThreads = useCallback(async () => {
     try {
       const res = (await invoke("rpc_request", {
@@ -785,7 +849,7 @@ export default function App() {
             ))}
             {activeTurnId && <div className="working">Codex is working…</div>}
           </div>
-          <div className="composer-wrap">
+          <div className={`composer-wrap${dragOver ? " drag-over" : ""}`} ref={composerWrapRef}>
             {modelOverride && (
               <div className="model-badge">
                 Model: {modelOverride}
