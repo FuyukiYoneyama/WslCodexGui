@@ -23,15 +23,15 @@ const DEFAULT_CODEX_PATH = "/home/user/.nvm/versions/node/v22.22.2/bin/codex";
 const DEFAULT_PROJECT_PATH = "/home/user";
 const ADD_NEW_VALUE = "__add_new__";
 
-function loadProjectPaths(): string[] {
+function loadStringList(key: string, fallback: string[]): string[] {
   try {
-    const raw = localStorage.getItem("projectPaths");
+    const raw = localStorage.getItem(key);
     const parsed = raw ? (JSON.parse(raw) as string[]) : [];
     if (Array.isArray(parsed) && parsed.length > 0) return parsed;
   } catch {
     // ignore malformed storage
   }
-  return [DEFAULT_PROJECT_PATH];
+  return fallback;
 }
 
 interface DisplayItem {
@@ -63,12 +63,21 @@ export default function App() {
   const [codexPath, setCodexPath] = useState(
     () => localStorage.getItem("codexPath") ?? DEFAULT_CODEX_PATH
   );
-  const [projectPaths, setProjectPaths] = useState<string[]>(loadProjectPaths);
-  const [projectCwd, setProjectCwd] = useState(
-    () => localStorage.getItem("projectCwd") ?? loadProjectPaths()[0]
+  // F-02b: explore roots (registered, bounded scan). F-02a: the resulting
+  // selectable list is these roots plus their discovered subdirectories —
+  // never a free-text path, and never an unbounded recursive scan.
+  const [projectRoots, setProjectRoots] = useState<string[]>(() =>
+    loadStringList("projectRoots", [DEFAULT_PROJECT_PATH])
   );
-  const [addingPath, setAddingPath] = useState(false);
-  const [newPathInput, setNewPathInput] = useState("");
+  const [projectPaths, setProjectPaths] = useState<string[]>(() =>
+    loadStringList("projectPaths", [DEFAULT_PROJECT_PATH])
+  );
+  const [projectCwd, setProjectCwd] = useState(
+    () => localStorage.getItem("projectCwd") ?? loadStringList("projectPaths", [DEFAULT_PROJECT_PATH])[0]
+  );
+  const [discovering, setDiscovering] = useState(false);
+  const [addingRoot, setAddingRoot] = useState(false);
+  const [newRootInput, setNewRootInput] = useState("");
 
   const [connState, setConnState] = useState<ConnState>("disconnected");
   const [initInfo, setInitInfo] = useState<InitializeResponse | null>(null);
@@ -124,6 +133,51 @@ export default function App() {
       setErrorBanner(`thread/list failed: ${e}`);
     }
   }, []);
+
+  // F-02b: scan each registered root (bounded depth, no shell string
+  // interpolation — see list_directories in Rust) and build the selectable
+  // list from the roots themselves plus what was found under them. This
+  // does not require an app-server connection; only wsl.exe.
+  const discoverProjects = useCallback(
+    async (roots: string[]) => {
+      setDiscovering(true);
+      try {
+        const results = await Promise.allSettled(
+          roots.map((root) =>
+            invoke<string[]>("list_directories", { distro, root, maxDepth: 2 })
+          )
+        );
+        const found = new Set<string>(roots);
+        const failures: string[] = [];
+        results.forEach((r, i) => {
+          if (r.status === "fulfilled") {
+            for (const d of r.value) found.add(d);
+          } else {
+            failures.push(`${roots[i]}: ${r.reason}`);
+          }
+        });
+        const merged = [...found].sort();
+        setProjectPaths(merged);
+        localStorage.setItem("projectPaths", JSON.stringify(merged));
+        if (!merged.includes(projectCwd) && merged.length > 0) {
+          setProjectCwd(merged[0]);
+          localStorage.setItem("projectCwd", merged[0]);
+        }
+        if (failures.length > 0) {
+          console.warn("project discovery failed for some roots:", failures);
+        }
+      } finally {
+        setDiscovering(false);
+      }
+    },
+    [distro, projectCwd]
+  );
+
+  // Discover on mount and whenever the target distro changes.
+  useEffect(() => {
+    void discoverProjects(projectRoots);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [distro]);
 
   // --- event wiring ---
   useEffect(() => {
@@ -349,32 +403,28 @@ export default function App() {
     }
   };
 
-  // F-02a: registered project paths, persisted; "追加..." opens a free-text
-  // entry that appends to (and selects) the list rather than replacing it.
+  // F-02a: the dropdown lists roots + their discovered subdirectories.
+  // "+ 探索ルートを追加…" registers a NEW ROOT to scan (F-02b) — it does not
+  // set the project path directly, since the user asked to pick from an
+  // actual discovered list rather than typing an exact path by hand.
   const onProjectSelectChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
     if (e.target.value === ADD_NEW_VALUE) {
-      setAddingPath(true);
-      setNewPathInput("");
+      setAddingRoot(true);
+      setNewRootInput("");
       return;
     }
     setProjectCwd(e.target.value);
     localStorage.setItem("projectCwd", e.target.value);
   };
 
-  const confirmNewPath = () => {
-    const p = newPathInput.trim();
-    if (!p) {
-      setAddingPath(false);
-      return;
-    }
-    setProjectPaths((prev) => {
-      const next = prev.includes(p) ? prev : [...prev, p];
-      localStorage.setItem("projectPaths", JSON.stringify(next));
-      return next;
-    });
-    setProjectCwd(p);
-    localStorage.setItem("projectCwd", p);
-    setAddingPath(false);
+  const confirmNewRoot = async () => {
+    const root = newRootInput.trim();
+    setAddingRoot(false);
+    if (!root) return;
+    const nextRoots = projectRoots.includes(root) ? projectRoots : [...projectRoots, root];
+    setProjectRoots(nextRoots);
+    localStorage.setItem("projectRoots", JSON.stringify(nextRoots));
+    await discoverProjects(nextRoots);
   };
 
   const approval = approvals[0];
@@ -429,29 +479,39 @@ export default function App() {
           </section>
 
           <section>
-            <h3>プロジェクト</h3>
+            <h3>
+              プロジェクト
+              <button
+                className="mini"
+                onClick={() => discoverProjects(projectRoots)}
+                disabled={discovering}
+                title="探索ルート配下を再スキャン"
+              >
+                {discovering ? "…" : "↻"}
+              </button>
+            </h3>
             <label>
-              WSLパス
-              {addingPath ? (
+              WSLパス（探索ルート配下から選択）
+              {addingRoot ? (
                 <div className="add-path-row">
                   <input
                     autoFocus
-                    value={newPathInput}
-                    onChange={(e) => setNewPathInput(e.target.value)}
+                    value={newRootInput}
+                    onChange={(e) => setNewRootInput(e.target.value)}
                     onKeyDown={(e) => {
                       if (e.key === "Enter" && !e.nativeEvent.isComposing) {
                         e.preventDefault();
-                        confirmNewPath();
+                        void confirmNewRoot();
                       } else if (e.key === "Escape") {
-                        setAddingPath(false);
+                        setAddingRoot(false);
                       }
                     }}
-                    placeholder="/home/user/src/myapp"
+                    placeholder="/home/user/work"
                   />
-                  <button className="mini" onClick={confirmNewPath}>
+                  <button className="mini" onClick={() => void confirmNewRoot()}>
                     OK
                   </button>
-                  <button className="mini" onClick={() => setAddingPath(false)}>
+                  <button className="mini" onClick={() => setAddingRoot(false)}>
                     ×
                   </button>
                 </div>
@@ -462,11 +522,11 @@ export default function App() {
                       {p}
                     </option>
                   ))}
-                  <option value={ADD_NEW_VALUE}>+ パスを追加…</option>
+                  <option value={ADD_NEW_VALUE}>+ 探索ルートを追加…</option>
                 </select>
               )}
             </label>
-            <button onClick={newThread} disabled={connState !== "connected" || addingPath}>
+            <button onClick={newThread} disabled={connState !== "connected" || addingRoot}>
               新しいスレッド
             </button>
           </section>
