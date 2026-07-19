@@ -120,7 +120,7 @@ export interface ConnectionTaggedEvent {
 }
 
 // Mirrors Rust's appserver::RpcFailure. `connect` and `rpc_request` reject
-// with this shape; other commands (list_directories, open_wsl_terminal,
+// with this shape; other commands (open_wsl_terminal, open_in_explorer,
 // etc.) still reject with a plain string.
 export type RpcFailureKind =
   | "write_failed"

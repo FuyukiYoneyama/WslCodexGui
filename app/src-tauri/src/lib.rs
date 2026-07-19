@@ -97,59 +97,6 @@ async fn respond_server_request(
     conn.respond(id, result).await
 }
 
-/// F-02a/F-02b: list subdirectories under a registered root, bounded by
-/// depth. `root` is passed as a single argv element to `find` (via
-/// `--exec`, no shell involved), so it can never be interpreted as shell
-/// syntax or break out into additional commands.
-#[tauri::command]
-async fn list_directories(distro: String, root: String, max_depth: u32) -> Result<Vec<String>, String> {
-    let depth = max_depth.max(1).to_string();
-    let output = tokio::process::Command::new("wsl.exe")
-        .args([
-            "-d",
-            &distro,
-            "--exec",
-            "find",
-            &root,
-            "-mindepth",
-            "1",
-            "-maxdepth",
-            &depth,
-            "-type",
-            "d",
-            "-not",
-            "-path",
-            "*/.*",
-            "-not",
-            "-path",
-            "*/node_modules*",
-            "-not",
-            "-path",
-            "*/target*",
-        ])
-        .output()
-        .await
-        .map_err(|e| format!("failed to run find: {e}"))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!(
-            "find under {root} exited with {}: {}",
-            output.status,
-            stderr.trim()
-        ));
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let mut dirs: Vec<String> = stdout
-        .lines()
-        .map(|l| l.trim().to_string())
-        .filter(|l| !l.is_empty())
-        .collect();
-    dirs.sort();
-    Ok(dirs)
-}
-
 /// Open an interactive WSL shell at `path` in its own console window.
 /// `cmd /c start` detaches the window from this process; `--cd` is a
 /// wsl.exe-native flag (no shell string is built from `path`).
@@ -263,6 +210,7 @@ pub fn run() {
             }
         }))
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .manage(AppState {
             conn: Mutex::new(None),
         })
@@ -271,7 +219,6 @@ pub fn run() {
             disconnect,
             rpc_request,
             respond_server_request,
-            list_directories,
             open_wsl_terminal,
             open_in_explorer,
             windows_path_to_wsl

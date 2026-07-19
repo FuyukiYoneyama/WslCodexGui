@@ -47,7 +47,6 @@ type ConnState = "disconnected" | "connecting" | "connected" | "disconnecting";
 // the initial default only — still overridable and persisted per N-20/F-02a.
 const DEFAULT_CODEX_PATH = "/home/user/.nvm/versions/node/v22.22.2/bin/codex";
 const DEFAULT_PROJECT_PATH = "/home/user";
-const ADD_NEW_VALUE = "__add_new__";
 
 // Server-initiated requests we know how to render as an approval card.
 // Anything else surfaces as an explicit "unsupported" banner instead of
@@ -118,21 +117,15 @@ export default function App() {
   const [codexPath, setCodexPath] = useState(
     () => localStorage.getItem("codexPath") ?? DEFAULT_CODEX_PATH
   );
-  // F-02b: explore roots (registered, bounded scan). F-02a: the resulting
-  // selectable list is these roots plus their discovered subdirectories —
-  // never a free-text path, and never an unbounded recursive scan.
-  const [projectRoots, setProjectRoots] = useState<string[]>(() =>
-    loadStringList("projectRoots", [DEFAULT_PROJECT_PATH])
-  );
+  // F-02a: history of folders the user has explicitly chosen via the native
+  // Explorer picker (browseForProject) or that a resumed thread's own cwd
+  // pointed at — never an automatic filesystem scan.
   const [projectPaths, setProjectPaths] = useState<string[]>(() =>
     loadStringList("projectPaths", [DEFAULT_PROJECT_PATH])
   );
   const [projectCwd, setProjectCwd] = useState(
     () => localStorage.getItem("projectCwd") ?? loadStringList("projectPaths", [DEFAULT_PROJECT_PATH])[0]
   );
-  const [discovering, setDiscovering] = useState(false);
-  const [addingRoot, setAddingRoot] = useState(false);
-  const [newRootInput, setNewRootInput] = useState("");
 
   const [connState, setConnState] = useState<ConnState>("disconnected");
   const [initInfo, setInitInfo] = useState<InitializeResponse | null>(null);
@@ -287,51 +280,6 @@ export default function App() {
       // connection may be mid-teardown etc.; footer badge just stays stale
     }
   }, []);
-
-  // F-02b: scan each registered root (bounded depth, no shell string
-  // interpolation — see list_directories in Rust) and build the selectable
-  // list from the roots themselves plus what was found under them. This
-  // does not require an app-server connection; only wsl.exe.
-  const discoverProjects = useCallback(
-    async (roots: string[]) => {
-      setDiscovering(true);
-      try {
-        const results = await Promise.allSettled(
-          roots.map((root) =>
-            invoke<string[]>("list_directories", { distro, root, maxDepth: 2 })
-          )
-        );
-        const found = new Set<string>(roots);
-        const failures: string[] = [];
-        results.forEach((r, i) => {
-          if (r.status === "fulfilled") {
-            for (const d of r.value) found.add(d);
-          } else {
-            failures.push(`${roots[i]}: ${r.reason}`);
-          }
-        });
-        const merged = [...found].sort();
-        setProjectPaths(merged);
-        localStorage.setItem("projectPaths", JSON.stringify(merged));
-        if (!merged.includes(projectCwd) && merged.length > 0) {
-          setProjectCwd(merged[0]);
-          localStorage.setItem("projectCwd", merged[0]);
-        }
-        if (failures.length > 0) {
-          console.warn("project discovery failed for some roots:", failures);
-        }
-      } finally {
-        setDiscovering(false);
-      }
-    },
-    [distro, projectCwd]
-  );
-
-  // Discover on mount and whenever the target distro changes.
-  useEffect(() => {
-    void discoverProjects(projectRoots);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [distro]);
 
   // --- event wiring ---
   useEffect(() => {
@@ -669,6 +617,30 @@ export default function App() {
     }
   };
 
+  // Native Explorer-style folder picker instead of the flat discovered-list
+  // dropdown. WSL is browsable from Windows via the \\wsl.localhost\<distro>
+  // UNC form, so the dialog opens there and the chosen path is converted
+  // back to a WSL path with the same windows_path_to_wsl command the
+  // drag-and-drop handler already uses.
+  const browseForProject = async () => {
+    try {
+      const startUnc = `\\\\wsl.localhost\\${distro}\\${(projectCwd || DEFAULT_PROJECT_PATH)
+        .replace(/^\//, "")
+        .replace(/\//g, "\\")}`;
+      const { open } = await import("@tauri-apps/plugin-dialog");
+      const picked = await open({ directory: true, defaultPath: startUnc });
+      if (!picked || typeof picked !== "string") return;
+      const wslPath = await invoke<string>("windows_path_to_wsl", { path: picked });
+      const next = projectPaths.includes(wslPath) ? projectPaths : [...projectPaths, wslPath].sort();
+      setProjectPaths(next);
+      localStorage.setItem("projectPaths", JSON.stringify(next));
+      setProjectCwd(wslPath);
+      localStorage.setItem("projectCwd", wslPath);
+    } catch (e) {
+      setErrorBanner(`フォルダ選択に失敗しました: ${e}`);
+    }
+  };
+
   const stop = async () => {
     if (!activeThreadId || !activeTurnId) return;
     try {
@@ -983,28 +955,12 @@ export default function App() {
     if (open) setSlashIndex(0);
   };
 
-  // F-02a: the dropdown lists roots + their discovered subdirectories.
-  // "+ 探索ルートを追加…" registers a NEW ROOT to scan (F-02b) — it does not
-  // set the project path directly, since the user asked to pick from an
-  // actual discovered list rather than typing an exact path by hand.
+  // F-02a: the dropdown lists folders explicitly chosen via browseForProject
+  // (plus any thread's own cwd encountered on resume) — a plain history,
+  // not an automatic scan.
   const onProjectSelectChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
-    if (e.target.value === ADD_NEW_VALUE) {
-      setAddingRoot(true);
-      setNewRootInput("");
-      return;
-    }
     setProjectCwd(e.target.value);
     localStorage.setItem("projectCwd", e.target.value);
-  };
-
-  const confirmNewRoot = async () => {
-    const root = newRootInput.trim();
-    setAddingRoot(false);
-    if (!root) return;
-    const nextRoots = projectRoots.includes(root) ? projectRoots : [...projectRoots, root];
-    setProjectRoots(nextRoots);
-    localStorage.setItem("projectRoots", JSON.stringify(nextRoots));
-    await discoverProjects(nextRoots);
   };
 
   const approval = approvals[0];
@@ -1024,61 +980,35 @@ export default function App() {
       <div className="body">
         <aside className="sidebar">
           <section>
-            <h3>
-              プロジェクト
-              <button
-                className="mini"
-                onClick={() => discoverProjects(projectRoots)}
-                disabled={discovering}
-                title="探索ルート配下を再スキャン"
-              >
-                {discovering ? "…" : "↻"}
-              </button>
-            </h3>
+            <h3>プロジェクト</h3>
             <label>
-              WSLパス（探索ルート配下から選択）
-              {addingRoot ? (
-                <div className="add-path-row">
-                  <input
-                    autoFocus
-                    value={newRootInput}
-                    onChange={(e) => setNewRootInput(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter" && !e.nativeEvent.isComposing) {
-                        e.preventDefault();
-                        void confirmNewRoot();
-                      } else if (e.key === "Escape") {
-                        setAddingRoot(false);
-                      }
-                    }}
-                    placeholder="/home/user/work"
-                  />
-                  <button className="mini" onClick={() => void confirmNewRoot()}>
-                    OK
-                  </button>
-                  <button className="mini" onClick={() => setAddingRoot(false)}>
-                    ×
-                  </button>
-                </div>
-              ) : (
+              WSLパス（参照で選んだフォルダの履歴）
+              <div className="project-path-row">
                 <select value={projectCwd} onChange={onProjectSelectChange}>
                   {projectPaths.map((p) => (
                     <option key={p} value={p}>
                       {p}
                     </option>
                   ))}
-                  <option value={ADD_NEW_VALUE}>+ 探索ルートを追加…</option>
                 </select>
-              )}
+                <button
+                  type="button"
+                  className="mini"
+                  onClick={() => void browseForProject()}
+                  title="エクスプローラーでフォルダを選択"
+                >
+                  📂 参照…
+                </button>
+              </div>
             </label>
             <div className="project-actions">
-              <button onClick={newThread} disabled={connState !== "connected" || addingRoot}>
+              <button onClick={newThread} disabled={connState !== "connected"}>
                 新しいスレッド
               </button>
               <button
                 className="icon-btn"
                 onClick={() => void openTerminalHere()}
-                disabled={!projectCwd || addingRoot}
+                disabled={!projectCwd}
                 title="このWSLパスでターミナルを開く"
               >
                 ⌨
@@ -1086,7 +1016,7 @@ export default function App() {
               <button
                 className="icon-btn"
                 onClick={() => void openExplorerHere()}
-                disabled={!projectCwd || addingRoot}
+                disabled={!projectCwd}
                 title="このWSLパスをエクスプローラーで開く"
               >
                 📁
