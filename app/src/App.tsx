@@ -210,6 +210,16 @@ export default function App() {
     if (el) el.scrollTop = el.scrollHeight;
   }, [items, activeTurnId]);
 
+  // The composer is disabled while a turn runs (N-17), which blurs it — the
+  // browser doesn't restore focus on its own once it re-enables, so do it
+  // explicitly whenever a turn finishes.
+  const composerInputRef = useRef<HTMLTextAreaElement>(null);
+  useEffect(() => {
+    if (connState === "connected" && activeThreadId && !activeTurnId) {
+      composerInputRef.current?.focus();
+    }
+  }, [activeTurnId, connState, activeThreadId]);
+
   // Drag-and-drop from Explorer: convert dropped Windows paths to WSL paths
   // (windows_path_to_wsl) and insert them into the composer. Tauri's OS-level
   // drag-drop only reports a cursor position, not the DOM target, so we test
@@ -274,16 +284,28 @@ export default function App() {
     };
   }, []);
 
+  const [showArchived, setShowArchived] = useState(false);
+
   const refreshThreads = useCallback(async () => {
     try {
-      const raw = await invoke("rpc_request", { method: "thread/list", params: { limit: 30 } });
+      const raw = await invoke("rpc_request", {
+        method: "thread/list",
+        params: { limit: 30, archived: showArchived },
+      });
       const res = parseOrReport(ThreadListResponseSchema, raw, "thread/list", setErrorBanner);
       if (!res) return;
       setThreads(res.data as unknown as Thread[]);
     } catch (e) {
       setErrorBanner(`thread/list failed: ${rpcErrorText(e)}`);
     }
-  }, []);
+  }, [showArchived]);
+
+  // refreshThreads is recreated when showArchived changes; re-fetch so
+  // toggling the archived view doesn't wait for the next unrelated refresh.
+  useEffect(() => {
+    if (connState === "connected") void refreshThreads();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showArchived]);
 
   // Silent refresh for the always-on footer badge (no error banner spam —
   // this runs automatically, not on explicit user action).
@@ -601,6 +623,29 @@ export default function App() {
       setThreads((prev) => prev.map((t) => (t.id === threadId ? { ...t, name } : t)));
     } catch (e) {
       setErrorBanner(`thread/name/set failed: ${rpcErrorText(e)}`);
+    }
+  };
+
+  const archiveThread = async (t: Thread) => {
+    try {
+      await invoke("rpc_request", { method: "thread/archive", params: { threadId: t.id } });
+      setThreads((prev) => prev.filter((th) => th.id !== t.id));
+      if (activeThreadId === t.id) {
+        setActiveThreadId(null);
+        setActiveTurnId(null);
+        setItems([]);
+      }
+    } catch (e) {
+      setErrorBanner(`thread/archive failed: ${rpcErrorText(e)}`);
+    }
+  };
+
+  const unarchiveThread = async (t: Thread) => {
+    try {
+      await invoke("rpc_request", { method: "thread/unarchive", params: { threadId: t.id } });
+      setThreads((prev) => prev.filter((th) => th.id !== t.id));
+    } catch (e) {
+      setErrorBanner(`thread/unarchive failed: ${rpcErrorText(e)}`);
     }
   };
 
@@ -1095,7 +1140,15 @@ export default function App() {
 
           <section className="threads">
             <h3>
-              スレッド
+              {showArchived ? "スレッド（アーカイブ済み）" : "スレッド"}
+              <button
+                className="mini"
+                onClick={() => setShowArchived((v) => !v)}
+                disabled={connState !== "connected"}
+                title={showArchived ? "通常のスレッド一覧に戻る" : "アーカイブ済みスレッドを表示"}
+              >
+                {showArchived ? "戻る" : "🗄"}
+              </button>
               <button className="mini" onClick={refreshThreads} disabled={connState !== "connected"}>
                 ↻
               </button>
@@ -1129,16 +1182,43 @@ export default function App() {
                       >
                         {(t.name ?? t.preview ?? t.id).slice(0, 40) || "(empty)"}
                       </button>
-                      <button
-                        className="rename-btn"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          startRenaming(t);
-                        }}
-                        title="スレッド名を変更"
-                      >
-                        ✎
-                      </button>
+                      {showArchived ? (
+                        <button
+                          className="rename-btn"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            void unarchiveThread(t);
+                          }}
+                          title="アーカイブから戻す"
+                        >
+                          ↩
+                        </button>
+                      ) : (
+                        <>
+                          <button
+                            className="rename-btn"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              startRenaming(t);
+                            }}
+                            title="スレッド名を変更"
+                          >
+                            ✎
+                          </button>
+                          <button
+                            className="rename-btn"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              if (window.confirm(`「${t.name ?? t.preview ?? t.id}」をアーカイブしますか？`)) {
+                                void archiveThread(t);
+                              }
+                            }}
+                            title="スレッドをアーカイブ"
+                          >
+                            🗄
+                          </button>
+                        </>
+                      )}
                     </>
                   )}
                 </li>
@@ -1248,6 +1328,7 @@ export default function App() {
             )}
             <div className="composer">
               <textarea
+                ref={composerInputRef}
                 value={input}
                 onChange={onInputChange}
                 onKeyDown={onInputKeyDown}
