@@ -899,17 +899,18 @@ export default function App() {
       });
       journalMarkSent(activeThreadId, requestId);
     } catch (e) {
-      // Only discard the journal entry when non-delivery is certain
-      // ("write_failed"/"server_rejected"). "response_timeout" and
-      // "connection_lost" leave the request's fate genuinely unknown -- the
-      // entry must survive for reconciliation, or a turn that actually
-      // started server-side could get silently forgotten. Classified by
-      // Rust's structured RpcFailure.kind, not string matching (a plain
-      // "connection closed" from the stdout-teardown path used to slip
-      // through the old string-matching check and get wrongly aborted).
+      // Allowlist, not a blocklist: only discard the journal entry for the
+      // two kinds where non-delivery is certain. Every other kind --
+      // "response_timeout", "connection_lost", "internal_error", and
+      // whatever new kind a future Rust change might introduce -- is
+      // treated as "fate unknown" by default, so the entry survives for
+      // reconciliation instead of a turn that actually started server-side
+      // getting silently forgotten. An exclusion-based check here would
+      // silently start discarding entries again the moment a new kind
+      // shows up that nobody taught this list about.
       const kind = rpcErrorKind(e);
-      const ambiguous = kind === "response_timeout" || kind === "connection_lost";
-      if (!ambiguous) {
+      const certainlyNotDelivered = kind === "write_failed" || kind === "server_rejected";
+      if (certainlyNotDelivered) {
         journalAbort(activeThreadId, requestId);
       }
       setErrorBanner(`turn/start failed: ${rpcErrorText(e)}`);
