@@ -205,7 +205,14 @@ fn resolve_drive_mapping(drive: &str) -> Option<String> {
 ///    auto-mount convention for the Windows filesystem)
 #[tauri::command]
 fn windows_path_to_wsl(path: String) -> Result<String, String> {
-    let normalized = path.replace('/', "\\");
+    let mut normalized = path.replace('/', "\\");
+    // Explorer includes a trailing separator when the dropped item is a
+    // folder (unlike files); strip it so the converted path doesn't end up
+    // with a spurious trailing slash. `> 3` keeps a bare drive root like
+    // "C:\" intact.
+    while normalized.len() > 3 && normalized.ends_with('\\') {
+        normalized.pop();
+    }
 
     let strip_wsl_unc = |s: &str| -> Option<String> {
         for prefix in ["\\\\wsl.localhost\\", "\\\\wsl$\\"] {

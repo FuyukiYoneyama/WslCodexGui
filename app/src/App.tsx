@@ -464,8 +464,13 @@ export default function App() {
       setInitInfo(info as InitializeResponse);
       setConnState("connected");
       await refreshThreads();
-      void fetchUsage();
-      void fetchDefaultModel();
+      // Rate limits / model catalog are OpenAI-account concepts that don't
+      // apply to a local Ollama provider (and model/list is unusable there
+      // anyway — see the "failed to refresh available models" errors).
+      if (provider !== "ollama") {
+        void fetchUsage();
+        void fetchDefaultModel();
+      }
       return true;
     } catch (e) {
       setConnState("disconnected");
@@ -1402,7 +1407,10 @@ export default function App() {
         <span>WSL: {distro}</span>
         {initInfo && <span>{initInfo.userAgent.split(" ")[0]}</span>}
         {activeThreadId && <span>Thread: {activeThreadId.slice(0, 13)}…</span>}
-        {connState === "connected" && (
+        {provider === "ollama" && connState === "connected" && (
+          <span className="model-footer">🦙 {ollamaModel}</span>
+        )}
+        {provider !== "ollama" && connState === "connected" && (
           <span className="model-footer">
             <button
               className="model-footer-badge"
@@ -1418,7 +1426,7 @@ export default function App() {
             )}
           </span>
         )}
-        {usagePanel && (
+        {provider !== "ollama" && usagePanel && (
           <button className="usage-badge" onClick={() => void openUsagePanel()} title="使用量の詳細を表示">
             <UsagePill label="P" pct={usagePanel.rateLimits.primary?.usedPercent} />
             {usagePanel.rateLimits.secondary && (
