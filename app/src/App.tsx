@@ -984,9 +984,9 @@ export default function App() {
             <label>
               WSLパス（参照で選んだフォルダの履歴）
               <div className="project-path-row">
-                <select value={projectCwd} onChange={onProjectSelectChange}>
+                <select value={projectCwd} onChange={onProjectSelectChange} title={projectCwd}>
                   {projectPaths.map((p) => (
-                    <option key={p} value={p}>
+                    <option key={p} value={p} title={p}>
                       {p}
                     </option>
                   ))}
