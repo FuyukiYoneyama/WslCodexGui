@@ -1,6 +1,6 @@
 mod appserver;
 
-use appserver::Connection;
+use appserver::{Connection, RpcFailure};
 use serde_json::{json, Value};
 use std::sync::Arc;
 use tauri::{AppHandle, State};
@@ -18,13 +18,15 @@ async fn connect(
     state: State<'_, AppState>,
     distro: String,
     codex_path: String,
-) -> Result<Value, String> {
+) -> Result<Value, RpcFailure> {
     // Drop any previous connection first.
     if let Some(old) = state.conn.lock().await.take() {
         old.shutdown().await;
     }
 
-    let conn = Connection::spawn(app, &distro, &codex_path).await?;
+    let conn = Connection::spawn(app, &distro, &codex_path)
+        .await
+        .map_err(RpcFailure::from)?;
 
     // initialize -> initialized handshake (spec 5.2; mandatory before any
     // other method).
@@ -42,7 +44,7 @@ async fn connect(
             })),
         )
         .await?;
-    conn.notify("initialized", None).await?;
+    conn.notify("initialized", None).await.map_err(RpcFailure::from)?;
 
     // Merge connectionId into the response so the frontend can tag its own
     // "current connection" and ignore stale events from a replaced one.
@@ -65,14 +67,22 @@ async fn disconnect(state: State<'_, AppState>) -> Result<(), String> {
 
 /// Generic JSON-RPC passthrough (thread/start, turn/start, thread/list, ...).
 /// Keeping the Rust layer thin; schema validation lives in the TS layer which
-/// is generated from the pinned codex version (N-10).
+/// is generated from the pinned codex version (N-10). Returns a structured
+/// RpcFailure so the frontend's operation journal (N-22) can tell certain
+/// non-delivery (write_failed/server_rejected) apart from unknown delivery
+/// (response_timeout/connection_lost) instead of pattern-matching strings.
 #[tauri::command]
 async fn rpc_request(
     state: State<'_, AppState>,
     method: String,
     params: Option<Value>,
-) -> Result<Value, String> {
-    let conn = state.conn.lock().await.clone().ok_or("not connected")?;
+) -> Result<Value, RpcFailure> {
+    let conn = state
+        .conn
+        .lock()
+        .await
+        .clone()
+        .ok_or_else(|| RpcFailure::from("not connected"))?;
     conn.request(&method, params).await
 }
 

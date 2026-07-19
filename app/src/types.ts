@@ -119,6 +119,21 @@ export interface ConnectionTaggedEvent {
   message?: string;
 }
 
+// Mirrors Rust's appserver::RpcFailure. `connect` and `rpc_request` reject
+// with this shape; other commands (list_directories, open_wsl_terminal,
+// etc.) still reject with a plain string.
+export type RpcFailureKind =
+  | "write_failed"
+  | "server_rejected"
+  | "response_timeout"
+  | "connection_lost"
+  | "internal_error";
+
+export interface RpcFailure {
+  kind: RpcFailureKind;
+  message: string;
+}
+
 // --- model/list (used by the /model slash command) ---
 
 export interface Model {

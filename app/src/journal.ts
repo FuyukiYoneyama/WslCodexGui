@@ -75,9 +75,8 @@ export function journalMarkStarted(threadId: string, turnId: string): void {
   const e = all[threadId];
   if (e) {
     e.turnId = turnId; // record regardless of phase advancement outcome
-    const changed = advance(e, "started");
+    advance(e, "started");
     writeAll(all);
-    void changed;
   }
 }
 

@@ -78,6 +78,23 @@ interface DisplayItem {
   streamingText?: string;
 }
 
+// `connect`/`rpc_request` reject with a structured RpcFailure object;
+// every other command still rejects with a plain string. This normalizes
+// both into a display string without ever showing "[object Object]".
+function rpcErrorText(e: unknown): string {
+  if (e && typeof e === "object" && "message" in e && typeof (e as { message: unknown }).message === "string") {
+    return (e as { message: string }).message;
+  }
+  return String(e);
+}
+
+function rpcErrorKind(e: unknown): string | undefined {
+  if (e && typeof e === "object" && "kind" in e) {
+    return (e as { kind?: unknown }).kind as string | undefined;
+  }
+  return undefined;
+}
+
 function decisionLabel(d: ApprovalDecision): string {
   if (typeof d === "string") {
     switch (d) {
@@ -251,7 +268,7 @@ export default function App() {
       if (!res) return;
       setThreads(res.data as unknown as Thread[]);
     } catch (e) {
-      setErrorBanner(`thread/list failed: ${e}`);
+      setErrorBanner(`thread/list failed: ${rpcErrorText(e)}`);
     }
   }, []);
 
@@ -472,7 +489,7 @@ export default function App() {
       return true;
     } catch (e) {
       setConnState("disconnected");
-      setErrorBanner(`接続失敗: ${e}`);
+      setErrorBanner(`接続失敗: ${rpcErrorText(e)}`);
       return false;
     }
   };
@@ -562,7 +579,7 @@ export default function App() {
         });
       }
     } catch (e) {
-      setErrorBanner(`thread/resume failed: ${e}`);
+      setErrorBanner(`thread/resume failed: ${rpcErrorText(e)}`);
     }
   };
 
@@ -594,7 +611,7 @@ export default function App() {
       });
       setThreads((prev) => prev.map((t) => (t.id === threadId ? { ...t, name } : t)));
     } catch (e) {
-      setErrorBanner(`thread/name/set failed: ${e}`);
+      setErrorBanner(`thread/name/set failed: ${rpcErrorText(e)}`);
     }
   };
 
@@ -625,7 +642,7 @@ export default function App() {
       setThreadTokenUsage(null);
       await refreshThreads();
     } catch (e) {
-      setErrorBanner(`thread/start failed: ${e}`);
+      setErrorBanner(`thread/start failed: ${rpcErrorText(e)}`);
     }
   };
 
@@ -654,7 +671,7 @@ export default function App() {
         params: { threadId: activeThreadId, turnId: activeTurnId },
       });
     } catch (e) {
-      setErrorBanner(`turn/interrupt failed: ${e}`);
+      setErrorBanner(`turn/interrupt failed: ${rpcErrorText(e)}`);
     }
   };
 
@@ -680,7 +697,7 @@ export default function App() {
       });
       setModelPicker(res.data.filter((m) => !m.hidden));
     } catch (e) {
-      setErrorBanner(`model/list failed: ${e}`);
+      setErrorBanner(`model/list failed: ${rpcErrorText(e)}`);
     }
   };
 
@@ -708,7 +725,7 @@ export default function App() {
       });
       setDiffPanel(res);
     } catch (e) {
-      setErrorBanner(`gitDiffToRemote failed: ${e}`);
+      setErrorBanner(`gitDiffToRemote failed: ${rpcErrorText(e)}`);
     }
   };
 
@@ -726,7 +743,7 @@ export default function App() {
       if (!res) return;
       setStatusPanel(res.thread as unknown as Thread);
     } catch (e) {
-      setErrorBanner(`thread/read failed: ${e}`);
+      setErrorBanner(`thread/read failed: ${rpcErrorText(e)}`);
     }
   };
 
@@ -770,7 +787,7 @@ export default function App() {
         void invoke("rpc_request", {
           method: "thread/goal/set",
           params: { threadId: activeThreadId, objective: arg },
-        }).catch((e) => setErrorBanner(`thread/goal/set failed: ${e}`));
+        }).catch((e) => setErrorBanner(`thread/goal/set failed: ${rpcErrorText(e)}`));
       },
     },
     {
@@ -784,7 +801,7 @@ export default function App() {
         void invoke("rpc_request", {
           method: "thread/compact/start",
           params: { threadId: activeThreadId },
-        }).catch((e) => setErrorBanner(`thread/compact/start failed: ${e}`));
+        }).catch((e) => setErrorBanner(`thread/compact/start failed: ${rpcErrorText(e)}`));
       },
     },
     {
@@ -882,20 +899,20 @@ export default function App() {
       });
       journalMarkSent(activeThreadId, requestId);
     } catch (e) {
-      // Only discard the journal entry when non-delivery is certain (the
-      // stdin write itself failed, or app-server explicitly rejected the
-      // request). A timeout or a dropped connection leaves the request's
-      // fate genuinely unknown -- the entry must survive for reconciliation
-      // rather than being cleared here, or a turn that actually started
-      // server-side could get silently forgotten.
-      const msg = String(e);
-      const ambiguous =
-        msg.includes("timeout waiting for response") ||
-        msg.includes("connection closed while waiting for response");
+      // Only discard the journal entry when non-delivery is certain
+      // ("write_failed"/"server_rejected"). "response_timeout" and
+      // "connection_lost" leave the request's fate genuinely unknown -- the
+      // entry must survive for reconciliation, or a turn that actually
+      // started server-side could get silently forgotten. Classified by
+      // Rust's structured RpcFailure.kind, not string matching (a plain
+      // "connection closed" from the stdout-teardown path used to slip
+      // through the old string-matching check and get wrongly aborted).
+      const kind = rpcErrorKind(e);
+      const ambiguous = kind === "response_timeout" || kind === "connection_lost";
       if (!ambiguous) {
         journalAbort(activeThreadId, requestId);
       }
-      setErrorBanner(`turn/start failed: ${e}`);
+      setErrorBanner(`turn/start failed: ${rpcErrorText(e)}`);
     }
   };
 

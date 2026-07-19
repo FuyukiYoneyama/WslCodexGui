@@ -21,6 +21,7 @@
 // connection's "disconnected" event arriving after a new `connect()` has
 // already succeeded).
 
+use serde::Serialize;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -31,11 +32,50 @@ use tokio::process::{Child, ChildStdin, Command};
 use tokio::sync::{oneshot, Mutex};
 use uuid::Uuid;
 
+/// Structured RPC failure, distinguishing failure modes the frontend's
+/// operation journal (N-22) needs to tell apart -- specifically, whether a
+/// turn/start's non-delivery is *certain* (safe to forget) or merely
+/// *unknown* (must be kept for reconciliation, since the request may well
+/// have reached app-server regardless of what the local error says).
+///
+///   write_failed     - stdin write itself failed; definitely never sent.
+///   server_rejected   - app-server sent back an explicit JSON-RPC error;
+///                       definitely processed (and rejected) server-side.
+///   response_timeout  - no response within the timeout; unknown.
+///   connection_lost   - the connection tore down before a response arrived
+///                       (stdout closed, or the oneshot sender was dropped);
+///                       unknown.
+///   internal_error    - anything else (spawn failure, "not connected",
+///                       etc.); treated as unknown by callers that care.
+#[derive(Serialize, Clone, Debug)]
+pub struct RpcFailure {
+    pub kind: &'static str,
+    pub message: String,
+}
+
+impl RpcFailure {
+    fn new(kind: &'static str, message: impl Into<String>) -> Self {
+        RpcFailure { kind, message: message.into() }
+    }
+}
+
+impl From<String> for RpcFailure {
+    fn from(message: String) -> Self {
+        RpcFailure::new("internal_error", message)
+    }
+}
+
+impl From<&str> for RpcFailure {
+    fn from(message: &str) -> Self {
+        RpcFailure::new("internal_error", message.to_string())
+    }
+}
+
 pub struct Connection {
     connection_id: String,
     stdin: Mutex<ChildStdin>,
     child: Mutex<Child>,
-    pending: Mutex<HashMap<u64, oneshot::Sender<Result<Value, Value>>>>,
+    pending: Mutex<HashMap<u64, oneshot::Sender<Result<Value, RpcFailure>>>>,
     next_id: AtomicU64,
 }
 
@@ -108,10 +148,14 @@ impl Connection {
                         }
                     }
                 }
-                // stdout closed: fail all pending requests, notify frontend.
+                // stdout closed: fail all pending requests with a distinctly
+                // kinded "connection_lost" (NOT "server_rejected" -- these
+                // requests may well have reached app-server before the
+                // connection tore down; the frontend's journal must not
+                // treat this as certain non-delivery).
                 let mut pending = conn.pending.lock().await;
                 for (_, tx) in pending.drain() {
-                    let _ = tx.send(Err(json!({"message": "connection closed"})));
+                    let _ = tx.send(Err(RpcFailure::new("connection_lost", "connection closed")));
                 }
                 drop(pending);
                 conn.emit_with_id(&app, "codex:disconnected", json!({}));
@@ -146,7 +190,9 @@ impl Connection {
             if let Some(id) = id {
                 if let Some(tx) = self.pending.lock().await.remove(&id) {
                     let payload = if let Some(err) = msg.get("error") {
-                        Err(err.clone())
+                        // app-server explicitly responded with a JSON-RPC
+                        // error: delivery (and processing) is certain.
+                        Err(RpcFailure::new("server_rejected", err.to_string()))
                     } else {
                         Ok(msg.get("result").cloned().unwrap_or(Value::Null))
                     };
@@ -173,7 +219,7 @@ impl Connection {
 
     /// Send a request and await its response (default timeout 120s — turns
     /// respond immediately; completion arrives separately via notification).
-    pub async fn request(&self, method: &str, params: Option<Value>) -> Result<Value, String> {
+    pub async fn request(&self, method: &str, params: Option<Value>) -> Result<Value, RpcFailure> {
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
         let (tx, rx) = oneshot::channel();
         self.pending.lock().await.insert(id, tx);
@@ -184,16 +230,24 @@ impl Connection {
         }
         if let Err(e) = self.write_line(&payload).await {
             self.pending.lock().await.remove(&id);
-            return Err(e);
+            // The write itself failed -- this request definitely never left
+            // the process, so non-delivery is certain.
+            return Err(RpcFailure::new("write_failed", e));
         }
 
         match tokio::time::timeout(std::time::Duration::from_secs(120), rx).await {
             Ok(Ok(Ok(result))) => Ok(result),
-            Ok(Ok(Err(err))) => Err(err.to_string()),
-            Ok(Err(_)) => Err("connection closed while waiting for response".into()),
+            Ok(Ok(Err(failure))) => Err(failure), // already correctly kinded by route()/cleanup
+            Ok(Err(_)) => {
+                // Sender dropped without sending at all (shouldn't normally
+                // happen given the cleanup path above, but treat the same
+                // way: delivery is unknown, not certain-failed).
+                Err(RpcFailure::new("connection_lost", "connection closed while waiting for response"))
+            }
             Err(_) => {
                 self.pending.lock().await.remove(&id);
-                Err(format!("timeout waiting for response to {method}"))
+                // We stopped waiting; app-server may still be processing it.
+                Err(RpcFailure::new("response_timeout", format!("timeout waiting for response to {method}")))
             }
         }
     }
