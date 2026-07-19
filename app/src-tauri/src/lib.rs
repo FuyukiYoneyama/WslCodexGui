@@ -98,6 +98,22 @@ async fn respond_server_request(
     conn.respond(id, result).await
 }
 
+/// Write a pasted clipboard image to a WSL temp file and return its Linux
+/// path, so it can be attached to a turn as UserInput's `localImage`
+/// (app-server runs inside WSL and can't read a Windows clipboard/path
+/// directly). Writing through the \\wsl.localhost UNC form is the same
+/// approach already used to edit files inside WSL from Rust elsewhere in
+/// this app (no shell/wsl.exe invocation needed for a plain file write).
+#[tauri::command]
+async fn save_pasted_image(distro: String, bytes: Vec<u8>, ext: String) -> Result<String, String> {
+    let filename = format!("wslcodexgui-paste-{}.{}", uuid::Uuid::new_v4(), ext);
+    let win_path = format!("\\\\wsl.localhost\\{distro}\\tmp\\{filename}");
+    tokio::fs::write(&win_path, &bytes)
+        .await
+        .map_err(|e| format!("failed to write pasted image: {e}"))?;
+    Ok(format!("/tmp/{filename}"))
+}
+
 /// Open an interactive WSL shell at `path` in its own console window.
 /// `cmd /c start` detaches the window from this process; `--cd` is a
 /// wsl.exe-native flag (no shell string is built from `path`).
@@ -294,6 +310,7 @@ pub fn run() {
             open_wsl_terminal,
             open_in_explorer,
             reveal_in_explorer,
+            save_pasted_image,
             windows_path_to_wsl,
             list_ollama_models
         ])

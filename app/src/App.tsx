@@ -153,6 +153,11 @@ export default function App() {
   const [items, setItems] = useState<DisplayItem[]>([]);
   const [approvals, setApprovals] = useState<ServerRequest[]>([]);
   const [input, setInput] = useState("");
+  // Images pasted from the clipboard, staged until send() attaches them to
+  // the turn as UserInput's localImage (app-server reads them from a WSL
+  // temp path — see save_pasted_image in lib.rs). previewUrl is a browser
+  // object URL for the thumbnail only; wslPath is what actually gets sent.
+  const [pastedImages, setPastedImages] = useState<{ id: string; wslPath: string; previewUrl: string }[]>([]);
   const [errorBanner, setErrorBanner] = useState<string | null>(null);
   const [stderrLog, setStderrLog] = useState<string[]>([]);
 
@@ -285,7 +290,11 @@ export default function App() {
         }
         if (p.type === "drop") {
           setDragOver(false);
-          if (!isOverComposer(p.position.x, p.position.y)) return;
+          // Composer is the only drop target this app has, so accept a drop
+          // anywhere in the window rather than gating on position — the
+          // "enter"/"over" position tracking above is cosmetic (highlight)
+          // only and occasionally disagreed with the drop event's own
+          // position, silently swallowing otherwise-valid drops.
           void (async () => {
             const wslPaths: string[] = [];
             for (const winPath of p.paths) {
@@ -1001,9 +1010,47 @@ export default function App() {
     setSlashIndex(0);
   };
 
+  // Ctrl+V with an image on the clipboard: stage it as a thumbnail instead
+  // of letting the browser paste garbage bitmap data as text. Actually
+  // sending it happens in send(), as UserInput's localImage.
+  const handleComposerPaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const items = Array.from(e.clipboardData.items).filter((i) => i.type.startsWith("image/"));
+    if (items.length === 0) return;
+    e.preventDefault();
+    for (const item of items) {
+      const blob = item.getAsFile();
+      if (!blob) continue;
+      const ext = item.type.split("/")[1]?.replace("jpeg", "jpg") || "png";
+      void (async () => {
+        try {
+          const bytes = new Uint8Array(await blob.arrayBuffer());
+          const wslPath = await invoke<string>("save_pasted_image", {
+            distro,
+            bytes: Array.from(bytes),
+            ext,
+          });
+          setPastedImages((prev) => [
+            ...prev,
+            { id: crypto.randomUUID(), wslPath, previewUrl: URL.createObjectURL(blob) },
+          ]);
+        } catch (err) {
+          setErrorBanner(`画像の貼り付けに失敗しました: ${err}`);
+        }
+      })();
+    }
+  };
+
+  const removePastedImage = (id: string) => {
+    setPastedImages((prev) => {
+      const target = prev.find((p) => p.id === id);
+      if (target) URL.revokeObjectURL(target.previewUrl);
+      return prev.filter((p) => p.id !== id);
+    });
+  };
+
   const send = async () => {
     const text = input.trim();
-    if (!text || !activeThreadId || activeTurnId) return;
+    if ((!text && pastedImages.length === 0) || !activeThreadId || activeTurnId) return;
 
     // "/name <arg>" typed out and submitted with Enter (not selected from
     // the dropdown, which already handled parameterless commands earlier).
@@ -1018,7 +1065,10 @@ export default function App() {
       }
     }
 
+    const images = pastedImages;
     setInput("");
+    setPastedImages([]);
+    for (const img of images) URL.revokeObjectURL(img.previewUrl);
     setErrorBanner(null);
     // N-22: prepare-before-send so a crash between here and turn/started
     // still leaves a record that this thread had a turn in flight.
@@ -1030,7 +1080,10 @@ export default function App() {
         method: "turn/start",
         params: {
           threadId: activeThreadId,
-          input: [{ type: "text", text, text_elements: [] }],
+          input: [
+            ...images.map((img) => ({ type: "localImage", path: img.wslPath })),
+            ...(text ? [{ type: "text", text, text_elements: [] }] : []),
+          ],
           ...(modelOverride ? { model: modelOverride } : {}),
         },
       });
@@ -1352,21 +1405,42 @@ export default function App() {
                 ))}
               </ul>
             )}
+            {pastedImages.length > 0 && (
+              <div className="pasted-images">
+                {pastedImages.map((img) => (
+                  <div key={img.id} className="pasted-image-chip">
+                    <img src={img.previewUrl} alt="貼り付けた画像" />
+                    <button
+                      type="button"
+                      className="mini"
+                      onClick={() => removePastedImage(img.id)}
+                      title="この画像を取り消す"
+                    >
+                      ×
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
             <div className="composer">
               <textarea
                 ref={composerInputRef}
                 value={input}
                 onChange={onInputChange}
                 onKeyDown={onInputKeyDown}
+                onPaste={handleComposerPaste}
                 placeholder={
                   activeThreadId
-                    ? "メッセージを入力（Enterで送信 / Shift+Enterで改行 / \"/\"でコマンド）"
+                    ? "メッセージを入力（Enterで送信 / Shift+Enterで改行 / \"/\"でコマンド / 画像はCtrl+Vで貼り付け）"
                     : "先にスレッドを選択または作成してください"
                 }
                 disabled={connState !== "connected" || !activeThreadId || !!activeTurnId}
                 rows={3}
               />
-              <button onClick={send} disabled={!input.trim() || !activeThreadId || !!activeTurnId}>
+              <button
+                onClick={send}
+                disabled={(!input.trim() && pastedImages.length === 0) || !activeThreadId || !!activeTurnId}
+              >
                 送信
               </button>
             </div>
@@ -1534,7 +1608,7 @@ export default function App() {
           </span>
         )}
         {provider !== "ollama" && usagePanel && (
-          <button className="usage-badge" onClick={() => void openUsagePanel()} title="使用量の詳細を表示">
+          <button className="usage-badge" onClick={() => void openUsagePanel()} title={usageResetTooltip(usagePanel)}>
             <UsagePill label="P" pct={usagePanel.rateLimits.primary?.usedPercent} />
             {usagePanel.rateLimits.secondary && (
               <UsagePill label="S" pct={usagePanel.rateLimits.secondary?.usedPercent} />
@@ -1549,6 +1623,17 @@ export default function App() {
       </footer>
     </div>
   );
+}
+
+// Detail (reset date/time) as a hover tooltip on the always-visible footer
+// badge, since the badge itself only has room for the compact "残り%" pills.
+function usageResetTooltip(usagePanel: GetAccountRateLimitsResponse): string {
+  const lines: string[] = [];
+  const primary = usagePanel.rateLimits.primary;
+  const secondary = usagePanel.rateLimits.secondary;
+  if (primary?.resetsAt) lines.push(`P リセット: ${new Date(primary.resetsAt * 1000).toLocaleString()}`);
+  if (secondary?.resetsAt) lines.push(`S リセット: ${new Date(secondary.resetsAt * 1000).toLocaleString()}`);
+  return lines.length > 0 ? lines.join("\n") : "使用量の詳細を表示";
 }
 
 // Codex公式GUI（利用制限画面）は「残り○%」表記なので、それに合わせる
