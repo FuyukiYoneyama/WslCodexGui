@@ -117,6 +117,22 @@ export default function App() {
   const [codexPath, setCodexPath] = useState(
     () => localStorage.getItem("codexPath") ?? DEFAULT_CODEX_PATH
   );
+  // Provider override, applied only as a -c flag on the spawned app-server
+  // process (never written to ~/.codex/config.toml) so the default provider
+  // used by every other codex client on this machine is never touched.
+  const [provider, setProvider] = useState<"openai" | "ollama">(
+    () => (localStorage.getItem("provider") as "openai" | "ollama" | null) ?? "openai"
+  );
+  const [ollamaModel, setOllamaModel] = useState(
+    () => localStorage.getItem("ollamaModel") ?? "gpt-oss:20b"
+  );
+  // codex has no built-in metadata for arbitrary Ollama models and otherwise
+  // falls back to an oversized default (see the "Defaulting to fallback
+  // metadata" warning) that doesn't match what Ollama's num_ctx actually
+  // serves — align the two explicitly instead.
+  const [ollamaContextWindow, setOllamaContextWindow] = useState(
+    () => localStorage.getItem("ollamaContextWindow") ?? "32768"
+  );
   // F-02a: history of folders the user has explicitly chosen via the native
   // Explorer picker (browseForProject) or that a resumed thread's own cwd
   // pointed at — never an automatic filesystem scan.
@@ -422,10 +438,21 @@ export default function App() {
     }
     localStorage.setItem("distro", distro);
     localStorage.setItem("codexPath", codexPath);
+    localStorage.setItem("provider", provider);
+    localStorage.setItem("ollamaModel", ollamaModel);
+    localStorage.setItem("ollamaContextWindow", ollamaContextWindow);
+    const configOverrides: string[] =
+      provider === "ollama"
+        ? [
+            "model_provider=ollama",
+            ...(ollamaModel.trim() ? [`model=${ollamaModel.trim()}`] : []),
+            ...(ollamaContextWindow.trim() ? [`model_context_window=${ollamaContextWindow.trim()}`] : []),
+          ]
+        : [];
     setConnState("connecting");
     setErrorBanner(null);
     try {
-      const raw = await invoke("connect", { distro, codexPath });
+      const raw = await invoke("connect", { distro, codexPath, configOverrides });
       const info = parseOrReport(InitializeResponseSchema, raw, "initialize", setErrorBanner);
       if (!info) {
         setConnState("disconnected");
@@ -638,6 +665,28 @@ export default function App() {
       localStorage.setItem("projectCwd", wslPath);
     } catch (e) {
       setErrorBanner(`フォルダ選択に失敗しました: ${e}`);
+    }
+  };
+
+  // Ollama exposes each pulled model's actual context length via its native
+  // /api/tags (not the OpenAI-compat /v1/models codex itself queries, which
+  // is why codex falls back to generic metadata) — pull the real number from
+  // there instead of guessing, so model_context_window matches what Ollama
+  // actually loaded the model with. Fetched via a Rust command (curl.exe)
+  // rather than browser fetch(), since the webview's fetch() hits Ollama's
+  // CORS restrictions.
+  const fetchOllamaContextLength = async () => {
+    const target = ollamaModel.trim();
+    if (!target) return;
+    try {
+      const len = await invoke<number | null>("fetch_ollama_context_length", { model: target });
+      if (typeof len === "number" && len > 0) {
+        setOllamaContextWindow(String(len));
+      } else {
+        setErrorBanner(`Ollamaのモデル一覧に "${target}" が見つかりませんでした（"ollama pull ${target}" 済みか確認してください）`);
+      }
+    } catch (e) {
+      setErrorBanner(`Ollamaへの問い合わせに失敗しました（起動していますか？）: ${e}`);
     }
   };
 
@@ -1097,6 +1146,44 @@ export default function App() {
                     placeholder="/home/user/.nvm/.../bin/codex"
                   />
                 </label>
+                <label>
+                  プロバイダ
+                  <select value={provider} onChange={(e) => setProvider(e.target.value as "openai" | "ollama")}>
+                    <option value="openai">OpenAI（既定）</option>
+                    <option value="ollama">Ollama（ローカル）</option>
+                  </select>
+                </label>
+                {provider === "ollama" && (
+                  <>
+                    <label>
+                      Ollamaモデル
+                      <input
+                        value={ollamaModel}
+                        onChange={(e) => setOllamaModel(e.target.value)}
+                        placeholder="gpt-oss:20b"
+                      />
+                    </label>
+                    <label>
+                      コンテキスト長
+                      <div className="project-path-row">
+                        <input
+                          value={ollamaContextWindow}
+                          onChange={(e) => setOllamaContextWindow(e.target.value)}
+                          placeholder="32768"
+                          title="codex側の自己申告値。Ollama実際のnum_ctxとは別物なので、右のボタンで実測値を取得してください"
+                        />
+                        <button
+                          type="button"
+                          className="mini"
+                          onClick={() => void fetchOllamaContextLength()}
+                          title="Ollamaに問い合わせて、このモデルの実際のcontext_lengthを取得"
+                        >
+                          自動取得
+                        </button>
+                      </div>
+                    </label>
+                  </>
+                )}
                 <button onClick={doConnect} disabled={connState === "connecting"}>
                   {connState === "connecting" ? "接続中…" : "接続"}
                 </button>

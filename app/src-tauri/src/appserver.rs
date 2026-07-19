@@ -95,10 +95,22 @@ impl Connection {
 
     /// Spawn the app-server child process and start the reader tasks.
     /// Does NOT run the initialize handshake; the caller does that.
-    pub async fn spawn(app: AppHandle, distro: &str, codex_path: &str) -> Result<Arc<Self>, String> {
+    pub async fn spawn(
+        app: AppHandle,
+        distro: &str,
+        codex_path: &str,
+        config_overrides: &[String],
+    ) -> Result<Arc<Self>, String> {
         let mut cmd = Command::new("wsl.exe");
-        cmd.args(["-d", distro, "--exec", codex_path, "app-server"])
-            .stdin(std::process::Stdio::piped())
+        cmd.args(["-d", distro, "--exec", codex_path, "app-server"]);
+        // e.g. "model_provider=ollama", "model=gpt-oss:20b" -- never written to
+        // config.toml, only applied to this one spawned process (see -c in
+        // `codex app-server --help`), so the default provider used by every
+        // other codex client on this machine is never touched.
+        for kv in config_overrides {
+            cmd.arg("-c").arg(kv);
+        }
+        cmd.stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped());
         // Prevent a console window flashing up on Windows.

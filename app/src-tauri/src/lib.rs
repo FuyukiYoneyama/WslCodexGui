@@ -18,13 +18,14 @@ async fn connect(
     state: State<'_, AppState>,
     distro: String,
     codex_path: String,
+    config_overrides: Vec<String>,
 ) -> Result<Value, RpcFailure> {
     // Drop any previous connection first.
     if let Some(old) = state.conn.lock().await.take() {
         old.shutdown().await;
     }
 
-    let conn = Connection::spawn(app, &distro, &codex_path)
+    let conn = Connection::spawn(app, &distro, &codex_path, &config_overrides)
         .await
         .map_err(RpcFailure::from)?;
 
@@ -107,6 +108,41 @@ fn open_wsl_terminal(distro: String, path: String) -> Result<(), String> {
         .spawn()
         .map_err(|e| format!("failed to open WSL terminal: {e}"))?;
     Ok(())
+}
+
+/// Look up `model`'s real context length from Ollama's native /api/tags
+/// (not the OpenAI-compat /v1/models codex itself queries, which is why
+/// codex falls back to generic metadata for unknown models). Runs via
+/// curl.exe rather than an HTTP client crate: browser fetch() from the
+/// webview hits Ollama's CORS restrictions, but curl.exe -> Ollama (both on
+/// Windows) isn't a cross-origin request at all.
+#[tauri::command]
+async fn fetch_ollama_context_length(model: String) -> Result<Option<u64>, String> {
+    let output = tokio::process::Command::new("curl.exe")
+        .args(["-s", "http://localhost:11434/api/tags"])
+        .output()
+        .await
+        .map_err(|e| format!("failed to run curl.exe: {e}"))?;
+    if !output.status.success() {
+        return Err(format!("curl.exe exited with {}", output.status));
+    }
+    let body = String::from_utf8_lossy(&output.stdout);
+    let json: Value = serde_json::from_str(&body).map_err(|e| format!("invalid JSON from Ollama: {e}"))?;
+    let models = json
+        .get("models")
+        .and_then(|v| v.as_array())
+        .ok_or("unexpected response shape from Ollama /api/tags")?;
+    for m in models {
+        let matches = m.get("name").and_then(|v| v.as_str()) == Some(model.as_str())
+            || m.get("model").and_then(|v| v.as_str()) == Some(model.as_str());
+        if matches {
+            return Ok(m
+                .get("details")
+                .and_then(|d| d.get("context_length"))
+                .and_then(|v| v.as_u64()));
+        }
+    }
+    Ok(None)
 }
 
 /// Open `path` (a Linux path inside `distro`) in Windows Explorer via the
@@ -221,7 +257,8 @@ pub fn run() {
             respond_server_request,
             open_wsl_terminal,
             open_in_explorer,
-            windows_path_to_wsl
+            windows_path_to_wsl,
+            fetch_ollama_context_length
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
