@@ -3,7 +3,7 @@ mod appserver;
 use appserver::{Connection, RpcFailure};
 use serde_json::{json, Value};
 use std::sync::Arc;
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager, State};
 use tokio::sync::Mutex;
 
 /// At most one live app-server connection (primary architecture: the child
@@ -250,6 +250,18 @@ fn windows_path_to_wsl(path: String) -> Result<String, String> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        // Must be registered first (tauri-plugin-single-instance requirement).
+        // A second launch hands its argv/cwd to this callback instead of
+        // starting its own WebView2/app-server -- avoids the localStorage
+        // journal race and duplicate app-server processes from running two
+        // windows against the same thread.
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.unminimize();
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_opener::init())
         .manage(AppState {
             conn: Mutex::new(None),
