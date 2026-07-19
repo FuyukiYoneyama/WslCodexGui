@@ -269,6 +269,20 @@ body { background: var(--bg); color: var(--text); }
   position: fixed; inset: 0; background: rgba(0,0,0,0.45);
   display: flex; align-items: center; justify-content: center; z-index: 50;
 }
+.context-menu-backdrop {
+  position: fixed; inset: 0; z-index: 60; background: transparent;
+}
+.context-menu {
+  position: fixed; z-index: 61;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 6px;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.25); padding: 4px; min-width: 200px;
+}
+.context-menu button {
+  display: block; width: 100%; text-align: left; padding: 6px 10px;
+  border: none; background: transparent; color: var(--text); cursor: pointer;
+  font-size: 12px; border-radius: 4px;
+}
+.context-menu button:hover { background: var(--bg); }
 .modal {
   background: var(--panel); border-radius: 10px;
   padding: 20px 24px; max-width: 560px; width: 90%;

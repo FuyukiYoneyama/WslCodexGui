@@ -172,6 +172,26 @@ fn open_in_explorer(distro: String, path: String) -> Result<(), String> {
     Ok(())
 }
 
+/// Open Explorer with `path` (a Linux path inside `distro`) selected within
+/// its containing folder, via the \\wsl.localhost\<distro>\... UNC form.
+/// Deliberately spawns explorer.exe as a plain process (same as
+/// open_in_explorer) rather than going through the opener plugin's
+/// revealItemInDir, which calls a COM shell API in-process and produced a
+/// window that rendered solid black until it lost and regained focus.
+#[tauri::command]
+fn reveal_in_explorer(distro: String, path: String) -> Result<(), String> {
+    let win_path = format!(
+        "\\\\wsl.localhost\\{}\\{}",
+        distro,
+        path.trim_start_matches('/').replace('/', "\\")
+    );
+    std::process::Command::new("explorer.exe")
+        .arg(format!("/select,{win_path}"))
+        .spawn()
+        .map_err(|e| format!("failed to open Explorer: {e}"))?;
+    Ok(())
+}
+
 /// Best-effort resolution of a `net use`-mapped drive letter (e.g. "V") back
 /// to its UNC target, by parsing `net use` output for a line naming that
 /// drive. Returns None on any parse/exec failure rather than erroring —
@@ -273,6 +293,7 @@ pub fn run() {
             respond_server_request,
             open_wsl_terminal,
             open_in_explorer,
+            reveal_in_explorer,
             windows_path_to_wsl,
             list_ollama_models
         ])

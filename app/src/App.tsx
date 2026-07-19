@@ -1329,7 +1329,7 @@ export default function App() {
         <main className="chat">
           <div className="transcript" ref={transcriptRef}>
             {items.map((di) => (
-              <TranscriptItem key={di.key} di={di} />
+              <TranscriptItem key={di.key} di={di} distro={distro} cwd={projectCwd} onLinkError={setErrorBanner} />
             ))}
             {activeTurnId && <div className="working">Codex is working…</div>}
           </div>
@@ -1588,8 +1588,112 @@ function UsageWindow({ label, w }: { label: string; w: import("./types").RateLim
   );
 }
 
-function TranscriptItem({ di }: { di: DisplayItem }) {
+// A relative (non-URL) markdown link, resolved against the thread's cwd.
+function resolveAbsoluteWslPath(href: string, cwd: string): string {
+  return href.startsWith("/") ? href : `${cwd.replace(/\/$/, "")}/${href.replace(/^\.\//, "")}`;
+}
+
+function wslPathToUnc(absolute: string, distro: string): string {
+  return `\\\\wsl.localhost\\${distro}\\${absolute.replace(/^\//, "").replace(/\//g, "\\")}`;
+}
+
+const isSchemeUrl = (href: string) => /^[a-z][a-z0-9+.-]*:/i.test(href);
+
+// A bare <a href> inside markdown navigates the whole webview away from the
+// SPA when clicked (Tauri doesn't intercept in-page link clicks) -- from the
+// user's perspective the app just "resets", losing all in-memory state.
+// Intercept it instead: absolute URLs open in the default browser/app;
+// anything else is treated as a WSL-relative path (codex often links build
+// artifacts this way) and opened via Explorer's \\wsl.localhost UNC form.
+// File links also get a right-click menu to reveal the containing folder
+// instead of opening the file itself.
+function MarkdownLink({
+  href,
+  children,
+  distro,
+  cwd,
+  onLinkError,
+  ...props
+}: React.ComponentProps<"a"> & { distro: string; cwd: string; onLinkError: (msg: string) => void }) {
+  const [menuPos, setMenuPos] = useState<{ x: number; y: number } | null>(null);
+  const isFileLink = !!href && !isSchemeUrl(href);
+
+  return (
+    <>
+      <a
+        {...props}
+        href={href}
+        onClick={(e) => {
+          e.preventDefault();
+          if (!href) return;
+          void (async () => {
+            try {
+              if (isSchemeUrl(href)) {
+                const { openUrl } = await import("@tauri-apps/plugin-opener");
+                await openUrl(href);
+              } else {
+                const { openPath } = await import("@tauri-apps/plugin-opener");
+                await openPath(wslPathToUnc(resolveAbsoluteWslPath(href, cwd), distro));
+              }
+            } catch (err) {
+              onLinkError(`リンクを開けませんでした（${href}）: ${err}`);
+            }
+          })();
+        }}
+        onContextMenu={(e) => {
+          if (!isFileLink) return;
+          e.preventDefault();
+          setMenuPos({ x: e.clientX, y: e.clientY });
+        }}
+      >
+        {children}
+      </a>
+      {menuPos && (
+        <>
+          <div className="context-menu-backdrop" onClick={() => setMenuPos(null)} />
+          <div className="context-menu" style={{ left: menuPos.x, top: menuPos.y }}>
+            <button
+              onClick={() => {
+                setMenuPos(null);
+                void (async () => {
+                  try {
+                    await invoke("reveal_in_explorer", { distro, path: resolveAbsoluteWslPath(href!, cwd) });
+                  } catch (err) {
+                    onLinkError(`エクスプローラーで開けませんでした（${href}）: ${err}`);
+                  }
+                })();
+              }}
+            >
+              エクスプローラーでリンク先のフォルダを開く
+            </button>
+          </div>
+        </>
+      )}
+    </>
+  );
+}
+
+function markdownLinkComponents(distro: string, cwd: string, onLinkError: (msg: string) => void) {
+  return {
+    a: (props: React.ComponentProps<"a">) => (
+      <MarkdownLink {...props} distro={distro} cwd={cwd} onLinkError={onLinkError} />
+    ),
+  };
+}
+
+function TranscriptItem({
+  di,
+  distro,
+  cwd,
+  onLinkError,
+}: {
+  di: DisplayItem;
+  distro: string;
+  cwd: string;
+  onLinkError: (msg: string) => void;
+}) {
   const { item, streamingText } = di;
+  const mdComponents = markdownLinkComponents(distro, cwd, onLinkError);
   switch (item.type) {
     case "userMessage": {
       const text = (item as Extract<ThreadItem, { type: "userMessage" }>).content
@@ -1602,7 +1706,7 @@ function TranscriptItem({ di }: { di: DisplayItem }) {
       const text = it.text || streamingText || "";
       return (
         <div className="msg agent md">
-          <ReactMarkdown remarkPlugins={[remarkGfm]}>{text}</ReactMarkdown>
+          <ReactMarkdown remarkPlugins={[remarkGfm]} components={mdComponents}>{text}</ReactMarkdown>
         </div>
       );
     }
@@ -1612,7 +1716,7 @@ function TranscriptItem({ di }: { di: DisplayItem }) {
       if (!summary) return null;
       return (
         <div className="msg reasoning md">
-          <ReactMarkdown remarkPlugins={[remarkGfm]}>{summary}</ReactMarkdown>
+          <ReactMarkdown remarkPlugins={[remarkGfm]} components={mdComponents}>{summary}</ReactMarkdown>
         </div>
       );
     }
