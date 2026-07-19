@@ -110,14 +110,21 @@ fn open_wsl_terminal(distro: String, path: String) -> Result<(), String> {
     Ok(())
 }
 
-/// Look up `model`'s real context length from Ollama's native /api/tags
-/// (not the OpenAI-compat /v1/models codex itself queries, which is why
-/// codex falls back to generic metadata for unknown models). Runs via
-/// curl.exe rather than an HTTP client crate: browser fetch() from the
-/// webview hits Ollama's CORS restrictions, but curl.exe -> Ollama (both on
-/// Windows) isn't a cross-origin request at all.
+#[derive(serde::Serialize)]
+struct OllamaModelInfo {
+    name: String,
+    context_length: Option<u64>,
+}
+
+/// List locally pulled Ollama models (name + real context length) from
+/// Ollama's native /api/tags (not the OpenAI-compat /v1/models codex itself
+/// queries, which is why codex falls back to generic metadata for unknown
+/// models and its own model/list is unusable here). Runs via curl.exe rather
+/// than an HTTP client crate: browser fetch() from the webview hits Ollama's
+/// CORS restrictions, but curl.exe -> Ollama (both on Windows) isn't a
+/// cross-origin request at all.
 #[tauri::command]
-async fn fetch_ollama_context_length(model: String) -> Result<Option<u64>, String> {
+async fn list_ollama_models() -> Result<Vec<OllamaModelInfo>, String> {
     let output = tokio::process::Command::new("curl.exe")
         .args(["-s", "http://localhost:11434/api/tags"])
         .output()
@@ -132,17 +139,19 @@ async fn fetch_ollama_context_length(model: String) -> Result<Option<u64>, Strin
         .get("models")
         .and_then(|v| v.as_array())
         .ok_or("unexpected response shape from Ollama /api/tags")?;
-    for m in models {
-        let matches = m.get("name").and_then(|v| v.as_str()) == Some(model.as_str())
-            || m.get("model").and_then(|v| v.as_str()) == Some(model.as_str());
-        if matches {
-            return Ok(m
+    let mut result: Vec<OllamaModelInfo> = models
+        .iter()
+        .filter_map(|m| {
+            let name = m.get("name").and_then(|v| v.as_str())?.to_string();
+            let context_length = m
                 .get("details")
                 .and_then(|d| d.get("context_length"))
-                .and_then(|v| v.as_u64()));
-        }
-    }
-    Ok(None)
+                .and_then(|v| v.as_u64());
+            Some(OllamaModelInfo { name, context_length })
+        })
+        .collect();
+    result.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(result)
 }
 
 /// Open `path` (a Linux path inside `distro`) in Windows Explorer via the
@@ -258,7 +267,7 @@ pub fn run() {
             open_wsl_terminal,
             open_in_explorer,
             windows_path_to_wsl,
-            fetch_ollama_context_length
+            list_ollama_models
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

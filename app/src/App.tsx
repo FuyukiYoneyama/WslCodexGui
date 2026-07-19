@@ -133,6 +133,8 @@ export default function App() {
   const [ollamaContextWindow, setOllamaContextWindow] = useState(
     () => localStorage.getItem("ollamaContextWindow") ?? "32768"
   );
+  const [ollamaModels, setOllamaModels] = useState<{ name: string; contextLength: number | null }[]>([]);
+  const [ollamaModelsLoading, setOllamaModelsLoading] = useState(false);
   // F-02a: history of folders the user has explicitly chosen via the native
   // Explorer picker (browseForProject) or that a resumed thread's own cwd
   // pointed at — never an automatic filesystem scan.
@@ -668,27 +670,40 @@ export default function App() {
     }
   };
 
-  // Ollama exposes each pulled model's actual context length via its native
-  // /api/tags (not the OpenAI-compat /v1/models codex itself queries, which
-  // is why codex falls back to generic metadata) — pull the real number from
-  // there instead of guessing, so model_context_window matches what Ollama
-  // actually loaded the model with. Fetched via a Rust command (curl.exe)
-  // rather than browser fetch(), since the webview's fetch() hits Ollama's
-  // CORS restrictions.
-  const fetchOllamaContextLength = async () => {
-    const target = ollamaModel.trim();
-    if (!target) return;
+  // codex's own model/list is unusable for Ollama (it queries the
+  // OpenAI-compat /v1/models endpoint, which fails to parse against
+  // Ollama's response shape — see the "failed to refresh available models"
+  // error). List installed models directly from Ollama's native /api/tags
+  // instead, which also carries each model's real context length so
+  // model_context_window can be set correctly without a separate lookup.
+  // Fetched via a Rust command (curl.exe) rather than browser fetch(), since
+  // the webview's fetch() hits Ollama's CORS restrictions.
+  const refreshOllamaModels = async () => {
+    setOllamaModelsLoading(true);
     try {
-      const len = await invoke<number | null>("fetch_ollama_context_length", { model: target });
-      if (typeof len === "number" && len > 0) {
-        setOllamaContextWindow(String(len));
-      } else {
-        setErrorBanner(`Ollamaのモデル一覧に "${target}" が見つかりませんでした（"ollama pull ${target}" 済みか確認してください）`);
-      }
+      const models = await invoke<{ name: string; context_length: number | null }[]>("list_ollama_models");
+      setOllamaModels(models.map((m) => ({ name: m.name, contextLength: m.context_length })));
     } catch (e) {
-      setErrorBanner(`Ollamaへの問い合わせに失敗しました（起動していますか？）: ${e}`);
+      setErrorBanner(`Ollamaのモデル一覧取得に失敗しました（起動していますか？）: ${e}`);
+    } finally {
+      setOllamaModelsLoading(false);
     }
   };
+
+  const onOllamaModelChange = (name: string) => {
+    setOllamaModel(name);
+    const found = ollamaModels.find((m) => m.name === name);
+    if (found?.contextLength) {
+      setOllamaContextWindow(String(found.contextLength));
+    }
+  };
+
+  useEffect(() => {
+    if (provider === "ollama" && ollamaModels.length === 0 && !ollamaModelsLoading) {
+      void refreshOllamaModels();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [provider]);
 
   const stop = async () => {
     if (!activeThreadId || !activeTurnId) return;
@@ -1157,30 +1172,38 @@ export default function App() {
                   <>
                     <label>
                       Ollamaモデル
-                      <input
-                        value={ollamaModel}
-                        onChange={(e) => setOllamaModel(e.target.value)}
-                        placeholder="gpt-oss:20b"
-                      />
-                    </label>
-                    <label>
-                      コンテキスト長
                       <div className="project-path-row">
-                        <input
-                          value={ollamaContextWindow}
-                          onChange={(e) => setOllamaContextWindow(e.target.value)}
-                          placeholder="32768"
-                          title="codex側の自己申告値。Ollama実際のnum_ctxとは別物なので、右のボタンで実測値を取得してください"
-                        />
+                        <select value={ollamaModel} onChange={(e) => onOllamaModelChange(e.target.value)}>
+                          {ollamaModels.length === 0 && <option value={ollamaModel}>{ollamaModel}</option>}
+                          {ollamaModels.length > 0 &&
+                            !ollamaModels.some((m) => m.name === ollamaModel) && (
+                              <option value={ollamaModel}>{ollamaModel}（未確認）</option>
+                            )}
+                          {ollamaModels.map((m) => (
+                            <option key={m.name} value={m.name}>
+                              {m.name}
+                            </option>
+                          ))}
+                        </select>
                         <button
                           type="button"
                           className="mini"
-                          onClick={() => void fetchOllamaContextLength()}
-                          title="Ollamaに問い合わせて、このモデルの実際のcontext_lengthを取得"
+                          onClick={() => void refreshOllamaModels()}
+                          disabled={ollamaModelsLoading}
+                          title="Ollamaに問い合わせてインストール済みモデル一覧を再取得"
                         >
-                          自動取得
+                          {ollamaModelsLoading ? "…" : "↻"}
                         </button>
                       </div>
+                    </label>
+                    <label>
+                      コンテキスト長
+                      <input
+                        value={ollamaContextWindow}
+                        onChange={(e) => setOllamaContextWindow(e.target.value)}
+                        placeholder="32768"
+                        title="モデル選択時にOllamaの実測値を自動反映（手動で上書き可）"
+                      />
                     </label>
                   </>
                 )}
