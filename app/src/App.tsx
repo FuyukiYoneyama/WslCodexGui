@@ -220,11 +220,17 @@ export default function App() {
     }
   }, [activeTurnId, connState, activeThreadId]);
 
-  // WebView2 (Windows IME) doesn't correctly attach its IME composition
-  // context to the very first element focused after the window is created —
-  // ON/OFF toggling misbehaves until focus leaves and returns once. Warm it
-  // up against a throwaway offscreen input right after mount instead of
-  // making the user click away and back themselves.
+  // KEEP THIS. It looks like dead/pointless code in isolation (focus a
+  // hidden input, then immediately blur it) — that's exactly the shape of
+  // thing a cleanup pass would delete. It is a deliberate workaround for a
+  // real WebView2 bug (see README.md, "起動直後だけIMEのON/OFFがおかしい"):
+  // IME ON/OFF toggling misbehaves on the very first element focused after the window
+  // is created, and only self-corrects once focus leaves and returns.
+  // Confirmed present, and confirmed fixed by this warm-up, on this machine
+  // (2026-07-19). Do not remove without first re-testing IME behavior on a
+  // freshly launched build — the bug is intermittent (it also affects the
+  // official Windows Codex app on and off), so its absence in one test run
+  // is not proof it's gone.
   useEffect(() => {
     const t = setTimeout(() => {
       const dummy = document.createElement("input");
