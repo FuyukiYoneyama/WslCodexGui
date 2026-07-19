@@ -220,6 +220,26 @@ export default function App() {
     }
   }, [activeTurnId, connState, activeThreadId]);
 
+  // WebView2 (Windows IME) doesn't correctly attach its IME composition
+  // context to the very first element focused after the window is created —
+  // ON/OFF toggling misbehaves until focus leaves and returns once. Warm it
+  // up against a throwaway offscreen input right after mount instead of
+  // making the user click away and back themselves.
+  useEffect(() => {
+    const t = setTimeout(() => {
+      const dummy = document.createElement("input");
+      dummy.style.position = "fixed";
+      dummy.style.left = "-9999px";
+      dummy.style.opacity = "0";
+      dummy.tabIndex = -1;
+      document.body.appendChild(dummy);
+      dummy.focus();
+      dummy.blur();
+      document.body.removeChild(dummy);
+    }, 200);
+    return () => clearTimeout(t);
+  }, []);
+
   // Drag-and-drop from Explorer: convert dropped Windows paths to WSL paths
   // (windows_path_to_wsl) and insert them into the composer. Tauri's OS-level
   // drag-drop only reports a cursor position, not the DOM target, so we test
