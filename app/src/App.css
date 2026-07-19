@@ -53,6 +53,12 @@ body { background: var(--bg); color: var(--text); }
   display: flex; gap: 6px; background: transparent; border: none;
   cursor: pointer; padding: 0; color: var(--muted);
 }
+.model-footer { display: flex; align-items: center; gap: 2px; }
+.model-footer-badge {
+  background: transparent; border: none; cursor: pointer;
+  padding: 2px 6px; border-radius: 4px; color: var(--muted); font-size: 12px;
+}
+.model-footer-badge:hover { background: var(--bg); color: var(--text); }
 .usage-pill {
   font-size: 11px; padding: 1px 6px; border-radius: 3px;
   background: var(--bg); border: 1px solid var(--border);

@@ -150,6 +150,8 @@ export default function App() {
   const [slashIndex, setSlashIndex] = useState(0);
   const [modelPicker, setModelPicker] = useState<Model[] | null>(null);
   const [modelOverride, setModelOverride] = useState<string | null>(null);
+  const [modelOverrideLabel, setModelOverrideLabel] = useState<string | null>(null);
+  const [defaultModelLabel, setDefaultModelLabel] = useState<string | null>(null);
   const [threadTokenUsage, setThreadTokenUsage] = useState<ThreadTokenUsage | null>(null);
   const [usagePanel, setUsagePanel] = useState<GetAccountRateLimitsResponse | null>(null);
   const [usageModalOpen, setUsageModalOpen] = useState(false);
@@ -486,6 +488,7 @@ export default function App() {
       setConnState("connected");
       await refreshThreads();
       void fetchUsage();
+      void fetchDefaultModel();
       return true;
     } catch (e) {
       setConnState("disconnected");
@@ -509,6 +512,10 @@ export default function App() {
       setApprovals([]);
       setUsagePanel(null);
       setUsageModalOpen(false);
+      setDefaultModelLabel(null);
+      // Keep modelOverride across a reconnect (the point of setting it is to
+      // stick until the user changes it); only the default-model lookup and
+      // usage data are connection-scoped and need to be cleared.
     }
   };
 
@@ -703,8 +710,26 @@ export default function App() {
 
   const pickModel = (m: Model) => {
     setModelOverride(m.model);
+    setModelOverrideLabel(m.displayName);
     setModelPicker(null);
   };
+
+  const clearModelOverride = () => {
+    setModelOverride(null);
+    setModelOverrideLabel(null);
+  };
+
+  // Silent lookup of the account's default model, purely for the footer
+  // label when no override is set (openModelPicker still re-fetches fresh
+  // data for the picker itself).
+  const fetchDefaultModel = useCallback(async () => {
+    try {
+      const res = await invoke<{ data: Model[] }>("rpc_request", { method: "model/list", params: {} });
+      setDefaultModelLabel(res.data.find((m) => m.isDefault)?.displayName ?? null);
+    } catch {
+      // silent — footer just falls back to a generic label
+    }
+  }, []);
 
   // Silent refresh for the always-on footer badge (no error banner spam —
   // this runs automatically, not on explicit user action).
@@ -1158,14 +1183,6 @@ export default function App() {
             {activeTurnId && <div className="working">Codex is working…</div>}
           </div>
           <div className={`composer-wrap${dragOver ? " drag-over" : ""}`} ref={composerWrapRef}>
-            {modelOverride && (
-              <div className="model-badge">
-                Model: {modelOverride}
-                <button className="mini" onClick={() => setModelOverride(null)}>
-                  ×
-                </button>
-              </div>
-            )}
             {slashOpen && filteredCommands.length > 0 && (
               <ul className="slash-menu">
                 {filteredCommands.map((c, i) => (
@@ -1345,6 +1362,22 @@ export default function App() {
         <span>WSL: {distro}</span>
         {initInfo && <span>{initInfo.userAgent.split(" ")[0]}</span>}
         {activeThreadId && <span>Thread: {activeThreadId.slice(0, 13)}…</span>}
+        {connState === "connected" && (
+          <span className="model-footer">
+            <button
+              className="model-footer-badge"
+              onClick={() => void openModelPicker()}
+              title="モデルを変更"
+            >
+              🧠 {modelOverrideLabel ?? defaultModelLabel ?? "モデル"}
+            </button>
+            {modelOverride && (
+              <button className="mini" onClick={clearModelOverride} title="既定モデルに戻す">
+                ×
+              </button>
+            )}
+          </span>
+        )}
         {usagePanel && (
           <button className="usage-badge" onClick={() => void openUsagePanel()} title="使用量の詳細を表示">
             <UsagePill label="P" pct={usagePanel.rateLimits.primary?.usedPercent} />
