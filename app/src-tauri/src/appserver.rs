@@ -15,6 +15,11 @@
 //   - non-JSON line                 -> forwarded as "codex:contamination"
 //                                     (spec says this must not happen; surface
 //                                     it loudly instead of hiding it).
+//
+// Every emitted event carries `connectionId` so the frontend can ignore
+// stale events from a Connection it has already replaced (e.g. the old
+// connection's "disconnected" event arriving after a new `connect()` has
+// already succeeded).
 
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -24,8 +29,10 @@ use tauri::{AppHandle, Emitter};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, Command};
 use tokio::sync::{oneshot, Mutex};
+use uuid::Uuid;
 
 pub struct Connection {
+    connection_id: String,
     stdin: Mutex<ChildStdin>,
     child: Mutex<Child>,
     pending: Mutex<HashMap<u64, oneshot::Sender<Result<Value, Value>>>>,
@@ -33,6 +40,19 @@ pub struct Connection {
 }
 
 impl Connection {
+    pub fn connection_id(&self) -> &str {
+        &self.connection_id
+    }
+
+    fn emit_with_id(&self, app: &AppHandle, event: &str, mut payload: Value) {
+        if let Value::Object(map) = &mut payload {
+            map.insert("connectionId".into(), json!(self.connection_id));
+        } else {
+            payload = json!({ "connectionId": self.connection_id, "value": payload });
+        }
+        let _ = app.emit(event, payload);
+    }
+
     /// Spawn the app-server child process and start the reader tasks.
     /// Does NOT run the initialize handshake; the caller does that.
     pub async fn spawn(app: AppHandle, distro: &str, codex_path: &str) -> Result<Arc<Self>, String> {
@@ -54,6 +74,7 @@ impl Connection {
         let stderr = child.stderr.take().ok_or("no stderr handle")?;
 
         let conn = Arc::new(Connection {
+            connection_id: Uuid::new_v4().to_string(),
             stdin: Mutex::new(stdin),
             child: Mutex::new(child),
             pending: Mutex::new(HashMap::new()),
@@ -76,13 +97,13 @@ impl Connection {
                             match serde_json::from_str::<Value>(&line) {
                                 Ok(msg) => conn.route(&app, msg).await,
                                 Err(_) => {
-                                    let _ = app.emit("codex:contamination", &line);
+                                    conn.emit_with_id(&app, "codex:contamination", json!({ "line": line }));
                                 }
                             }
                         }
                         Ok(None) => break, // EOF
                         Err(e) => {
-                            let _ = app.emit("codex:read-error", e.to_string());
+                            conn.emit_with_id(&app, "codex:read-error", json!({ "message": e.to_string() }));
                             break;
                         }
                     }
@@ -92,17 +113,19 @@ impl Connection {
                 for (_, tx) in pending.drain() {
                     let _ = tx.send(Err(json!({"message": "connection closed"})));
                 }
-                let _ = app.emit("codex:disconnected", ());
+                drop(pending);
+                conn.emit_with_id(&app, "codex:disconnected", json!({}));
             });
         }
 
         // stderr reader (N-19): forward as diagnostic events.
         {
+            let conn = conn.clone();
             let app = app.clone();
             tokio::spawn(async move {
                 let mut lines = BufReader::new(stderr).lines();
                 while let Ok(Some(line)) = lines.next_line().await {
-                    let _ = app.emit("codex:stderr", &line);
+                    conn.emit_with_id(&app, "codex:stderr", json!({ "line": line }));
                 }
             });
         }
@@ -115,9 +138,9 @@ impl Connection {
         let has_id = msg.get("id").is_some();
         if has_method && has_id {
             // Server-initiated request (approval etc.) — frontend must answer.
-            let _ = app.emit("codex:server-request", &msg);
+            self.emit_with_id(app, "codex:server-request", msg);
         } else if has_method {
-            let _ = app.emit("codex:notification", &msg);
+            self.emit_with_id(app, "codex:notification", msg);
         } else if has_id {
             let id = msg.get("id").and_then(Value::as_u64);
             if let Some(id) = id {
@@ -131,9 +154,9 @@ impl Connection {
                     return;
                 }
             }
-            let _ = app.emit("codex:orphan-response", &msg);
+            self.emit_with_id(app, "codex:orphan-response", msg);
         } else {
-            let _ = app.emit("codex:contamination", msg.to_string());
+            self.emit_with_id(app, "codex:contamination", json!({ "line": msg.to_string() }));
         }
     }
 

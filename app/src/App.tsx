@@ -4,12 +4,11 @@ import { listen } from "@tauri-apps/api/event";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type {
-  AgentMessageDelta,
   ApprovalDecision,
   CommandApprovalParams,
+  ConnectionTaggedEvent,
   GetAccountRateLimitsResponse,
   InitializeResponse,
-  ItemNotification,
   Model,
   Notification,
   ServerRequest,
@@ -19,6 +18,26 @@ import type {
   ThreadTokenUsageUpdated,
   TurnCompletedNotification,
 } from "./types";
+import {
+  AgentMessageDeltaSchema,
+  InitializeResponseSchema,
+  ItemNotificationSchema,
+  ServerRequestSchema,
+  ThreadListResponseSchema,
+  ThreadReadResponseSchema,
+  ThreadResumeResponseSchema,
+  ThreadStartResponseSchema,
+  TurnCompletedNotificationSchema,
+  TurnStartedNotificationSchema,
+  parseOrReport,
+} from "./schemas";
+import {
+  journalGet,
+  journalMarkCompleted,
+  journalMarkSent,
+  journalMarkStarted,
+  journalPrepare,
+} from "./journal";
 import "./App.css";
 
 type ConnState = "disconnected" | "connecting" | "connected" | "disconnecting";
@@ -114,6 +133,12 @@ export default function App() {
   const activeThreadIdRef = useRef<string | null>(null);
   activeThreadIdRef.current = activeThreadId;
 
+  // Tags the Connection currently considered "live". Every Rust-emitted
+  // event carries connectionId; events from a Connection we've already
+  // replaced (e.g. its delayed "disconnected" arriving after a new
+  // connect() already succeeded) are ignored instead of corrupting state.
+  const connectionIdRef = useRef<string | null>(null);
+
   // Delta batching (N-18): accumulate per-item text, flush on a ~33ms tick.
   const deltaBufRef = useRef<Map<string, string>>(new Map());
   const flushScheduledRef = useRef(false);
@@ -208,11 +233,10 @@ export default function App() {
 
   const refreshThreads = useCallback(async () => {
     try {
-      const res = (await invoke("rpc_request", {
-        method: "thread/list",
-        params: { limit: 30 },
-      })) as { data: Thread[] };
-      setThreads(res.data);
+      const raw = await invoke("rpc_request", { method: "thread/list", params: { limit: 30 } });
+      const res = parseOrReport(ThreadListResponseSchema, raw, "thread/list", setErrorBanner);
+      if (!res) return;
+      setThreads(res.data as unknown as Thread[]);
     } catch (e) {
       setErrorBanner(`thread/list failed: ${e}`);
     }
@@ -280,38 +304,49 @@ export default function App() {
   // --- event wiring ---
   useEffect(() => {
     const unlisteners: Promise<() => void>[] = [];
+    const isCurrent = (connectionId: string | undefined) =>
+      !!connectionId && connectionId === connectionIdRef.current;
 
     unlisteners.push(
       listen<Notification>("codex:notification", (ev) => {
+        if (!isCurrent(ev.payload.connectionId)) return; // stale connection's event
         const { method, params } = ev.payload;
         const threadId = (params as { threadId?: string } | undefined)?.threadId;
         if (threadId && threadId !== activeThreadIdRef.current) return;
 
         switch (method) {
           case "turn/started": {
-            const p = params as { turn?: { id: string } };
-            if (p.turn?.id) setActiveTurnId(p.turn.id);
+            const p = parseOrReport(TurnStartedNotificationSchema, params, "turn/started", setErrorBanner);
+            if (!p) break;
+            setActiveTurnId(p.turn.id);
+            journalMarkStarted(p.threadId, p.turn.id);
             break;
           }
           case "turn/completed": {
-            const p = params as unknown as TurnCompletedNotification;
+            const p = parseOrReport(TurnCompletedNotificationSchema, params, "turn/completed", setErrorBanner);
+            if (!p) break;
             setActiveTurnId(null);
             if (p.turn.status === "failed") {
-              setErrorBanner(`Turn failed: ${JSON.stringify(p.turn.error)}`);
+              setErrorBanner(`Turn failed: ${JSON.stringify((p.turn as unknown as TurnCompletedNotification["turn"]).error)}`);
             }
+            journalMarkCompleted(p.threadId);
             void fetchUsage(); // keep the footer badge current after each turn
             break;
           }
           case "item/started": {
-            const p = params as unknown as ItemNotification;
-            setItems((prev) => [...prev, { key: p.item.id, item: p.item, streamingText: "" }]);
+            const p = parseOrReport(ItemNotificationSchema, params, "item/started", setErrorBanner);
+            if (!p) break;
+            const item = p.item as unknown as ThreadItem;
+            setItems((prev) => [...prev, { key: item.id, item, streamingText: "" }]);
             break;
           }
           case "item/completed": {
-            const p = params as unknown as ItemNotification;
+            const p = parseOrReport(ItemNotificationSchema, params, "item/completed", setErrorBanner);
+            if (!p) break;
+            const item = p.item as unknown as ThreadItem;
             setItems((prev) => {
-              const idx = prev.findIndex((di) => di.item.id === p.item.id);
-              const done: DisplayItem = { key: p.item.id, item: p.item };
+              const idx = prev.findIndex((di) => di.item.id === item.id);
+              const done: DisplayItem = { key: item.id, item };
               if (idx < 0) return [...prev, done];
               const next = [...prev];
               next[idx] = done;
@@ -320,7 +355,8 @@ export default function App() {
             break;
           }
           case "item/agentMessage/delta": {
-            const p = params as unknown as AgentMessageDelta;
+            const p = parseOrReport(AgentMessageDeltaSchema, params, "item/agentMessage/delta", setErrorBanner);
+            if (!p) break;
             const cur = deltaBufRef.current.get(p.itemId) ?? "";
             deltaBufRef.current.set(p.itemId, cur + p.delta);
             scheduleFlush();
@@ -352,18 +388,24 @@ export default function App() {
 
     unlisteners.push(
       listen<ServerRequest>("codex:server-request", (ev) => {
-        setApprovals((prev) => [...prev, ev.payload]);
+        if (!isCurrent(ev.payload.connectionId)) return;
+        const req = parseOrReport(ServerRequestSchema, ev.payload, "server-request", setErrorBanner);
+        if (!req) return;
+        setApprovals((prev) => [...prev, req as ServerRequest]);
       })
     );
 
     unlisteners.push(
-      listen<string>("codex:stderr", (ev) => {
-        setStderrLog((prev) => [...prev.slice(-199), ev.payload]);
+      listen<ConnectionTaggedEvent>("codex:stderr", (ev) => {
+        if (!isCurrent(ev.payload.connectionId)) return;
+        setStderrLog((prev) => [...prev.slice(-199), ev.payload.line ?? ""]);
       })
     );
 
     unlisteners.push(
-      listen("codex:disconnected", () => {
+      listen<ConnectionTaggedEvent>("codex:disconnected", (ev) => {
+        if (!isCurrent(ev.payload.connectionId)) return; // an already-replaced connection tearing down
+        connectionIdRef.current = null;
         setConnState("disconnected");
         setActiveTurnId(null);
         // Pending approvals died with the connection (spec 7.3: 失効).
@@ -372,8 +414,9 @@ export default function App() {
     );
 
     unlisteners.push(
-      listen<string>("codex:contamination", (ev) => {
-        setErrorBanner(`プロトコル外のstdout出力を検出: ${ev.payload.slice(0, 200)}`);
+      listen<ConnectionTaggedEvent>("codex:contamination", (ev) => {
+        if (!isCurrent(ev.payload.connectionId)) return;
+        setErrorBanner(`プロトコル外のstdout出力を検出: ${(ev.payload.line ?? "").slice(0, 200)}`);
       })
     );
 
@@ -395,8 +438,14 @@ export default function App() {
     setConnState("connecting");
     setErrorBanner(null);
     try {
-      const info = (await invoke("connect", { distro, codexPath })) as InitializeResponse;
-      setInitInfo(info);
+      const raw = await invoke("connect", { distro, codexPath });
+      const info = parseOrReport(InitializeResponseSchema, raw, "initialize", setErrorBanner);
+      if (!info) {
+        setConnState("disconnected");
+        return false;
+      }
+      connectionIdRef.current = info.connectionId ?? null;
+      setInitInfo(info as InitializeResponse);
       setConnState("connected");
       await refreshThreads();
       void fetchUsage();
@@ -415,6 +464,7 @@ export default function App() {
     } catch (e) {
       setErrorBanner(`切断処理でエラー: ${e}`);
     } finally {
+      connectionIdRef.current = null;
       setConnState("disconnected");
       setActiveThreadId(null);
       setActiveTurnId(null);
@@ -425,25 +475,42 @@ export default function App() {
     }
   };
 
+  // F-08c reconciliation: if a journal entry from a previous (possibly
+  // crashed) session is still open for this thread, resolve it against the
+  // thread's own last turn status instead of guessing. Never resends.
+  const reconcileJournal = (threadId: string, turns: { status: string }[]) => {
+    const entry = journalGet(threadId);
+    if (!entry) return;
+    journalMarkCompleted(threadId); // we've now surfaced/consumed it either way
+    const lastTurn = turns[turns.length - 1];
+    const status = lastTurn?.status ?? "状態不明";
+    if (status !== "completed") {
+      setErrorBanner(
+        `前回のセッションで未完了だったturn（スレッド ${threadId.slice(0, 8)}…）の状態: ${status}。自動再送はしていません。`
+      );
+    }
+  };
+
   const resumeThread = async (threadId: string) => {
     setErrorBanner(null);
     try {
-      const res = (await invoke("rpc_request", {
-        method: "thread/resume",
-        params: { threadId },
-      })) as { thread: Thread };
-      setActiveThreadId(res.thread.id);
+      const raw = await invoke("rpc_request", { method: "thread/resume", params: { threadId } });
+      const res = parseOrReport(ThreadResumeResponseSchema, raw, "thread/resume", setErrorBanner);
+      if (!res) return;
+      const thread = res.thread as unknown as Thread;
+      setActiveThreadId(thread.id);
       setActiveTurnId(null);
       setThreadTokenUsage(null); // stale until the next tokenUsage/updated for this thread
       setItems(
-        res.thread.turns.flatMap((t) =>
+        thread.turns.flatMap((t) =>
           t.items.map((item) => ({ key: `${t.id}:${item.id}`, item }))
         )
       );
+      reconcileJournal(thread.id, thread.turns);
       // Reflect this thread's own workspace in the project selector, adding
       // it to the list if it isn't a discovered/registered path yet.
-      if (res.thread.cwd) {
-        const cwd = res.thread.cwd;
+      if (thread.cwd) {
+        const cwd = thread.cwd;
         setProjectCwd(cwd);
         localStorage.setItem("projectCwd", cwd);
         setProjectPaths((prev) => {
@@ -506,10 +573,12 @@ export default function App() {
     localStorage.setItem("projectCwd", projectCwd);
     setErrorBanner(null);
     try {
-      const res = (await invoke("rpc_request", {
+      const raw = await invoke("rpc_request", {
         method: "thread/start",
         params: { cwd: projectCwd.trim() },
-      })) as { thread: Thread };
+      });
+      const res = parseOrReport(ThreadStartResponseSchema, raw, "thread/start", setErrorBanner);
+      if (!res) return;
       setActiveThreadId(res.thread.id);
       setItems([]);
       setThreadTokenUsage(null);
@@ -608,11 +677,13 @@ export default function App() {
       return;
     }
     try {
-      const res = await invoke<{ thread: Thread }>("rpc_request", {
+      const raw = await invoke("rpc_request", {
         method: "thread/read",
         params: { threadId: activeThreadId },
       });
-      setStatusPanel(res.thread);
+      const res = parseOrReport(ThreadReadResponseSchema, raw, "thread/read", setErrorBanner);
+      if (!res) return;
+      setStatusPanel(res.thread as unknown as Thread);
     } catch (e) {
       setErrorBanner(`thread/read failed: ${e}`);
     }
@@ -754,6 +825,10 @@ export default function App() {
 
     setInput("");
     setErrorBanner(null);
+    // N-22: prepare-before-send so a crash between here and turn/started
+    // still leaves a record that this thread had a turn in flight.
+    const requestId = crypto.randomUUID();
+    journalPrepare(activeThreadId, requestId);
     try {
       // N-17: sends are serialized — input is disabled while a turn runs.
       await invoke("rpc_request", {
@@ -764,6 +839,7 @@ export default function App() {
           ...(modelOverride ? { model: modelOverride } : {}),
         },
       });
+      journalMarkSent(activeThreadId, requestId);
     } catch (e) {
       setErrorBanner(`turn/start failed: ${e}`);
     }

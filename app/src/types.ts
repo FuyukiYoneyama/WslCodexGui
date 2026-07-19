@@ -10,6 +10,7 @@ export interface InitializeResponse {
   codexHome: string;
   platformFamily: string;
   platformOs: string;
+  connectionId?: string;
 }
 
 export type ThreadStatus =
@@ -83,6 +84,9 @@ export interface TurnCompletedNotification {
 export interface Notification {
   method: string;
   params?: unknown;
+  // Set by the Rust side (appserver.rs emit_with_id) so stale events from a
+  // replaced Connection can be told apart from the current one.
+  connectionId?: string;
 }
 
 // --- server -> client requests (approvals; spec 7.3) ---
@@ -106,6 +110,13 @@ export interface ServerRequest {
   id: RequestId;
   method: string;
   params: unknown;
+  connectionId?: string;
+}
+
+export interface ConnectionTaggedEvent {
+  connectionId?: string;
+  line?: string;
+  message?: string;
 }
 
 // --- model/list (used by the /model slash command) ---

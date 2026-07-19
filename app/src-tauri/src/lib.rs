@@ -44,6 +44,13 @@ async fn connect(
         .await?;
     conn.notify("initialized", None).await?;
 
+    // Merge connectionId into the response so the frontend can tag its own
+    // "current connection" and ignore stale events from a replaced one.
+    let mut init = init;
+    if let Value::Object(map) = &mut init {
+        map.insert("connectionId".into(), json!(conn.connection_id()));
+    }
+
     *state.conn.lock().await = Some(conn);
     Ok(init)
 }
