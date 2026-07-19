@@ -14,6 +14,17 @@ const STORAGE_KEY = "turnJournal";
 
 export type JournalPhase = "prepared" | "sent" | "started" | "completed";
 
+// Monotonic: turn/started can (and does, in practice) arrive before the
+// turn/start RPC call itself resolves, so a naive "last writer wins" update
+// would let the phase regress from "started" back down to "sent". Every
+// mark* function below only ever moves an entry forward through this rank.
+const PHASE_RANK: Record<JournalPhase, number> = {
+  prepared: 0,
+  sent: 1,
+  started: 2,
+  completed: 3,
+};
+
 export interface JournalEntry {
   threadId: string;
   turnId: string | null;
@@ -35,6 +46,13 @@ function writeAll(entries: Record<string, JournalEntry>) {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(entries));
 }
 
+function advance(e: JournalEntry, next: JournalPhase): boolean {
+  if (PHASE_RANK[next] <= PHASE_RANK[e.phase]) return false;
+  e.phase = next;
+  e.updatedAt = Date.now();
+  return true;
+}
+
 /** Step 1: record intent, before the turn/start RPC is even issued. */
 export function journalPrepare(threadId: string, requestId: string): void {
   const all = readAll();
@@ -46,9 +64,7 @@ export function journalPrepare(threadId: string, requestId: string): void {
 export function journalMarkSent(threadId: string, requestId: string): void {
   const all = readAll();
   const e = all[threadId];
-  if (e && e.requestId === requestId) {
-    e.phase = "sent";
-    e.updatedAt = Date.now();
+  if (e && e.requestId === requestId && advance(e, "sent")) {
     writeAll(all);
   }
 }
@@ -58,10 +74,10 @@ export function journalMarkStarted(threadId: string, turnId: string): void {
   const all = readAll();
   const e = all[threadId];
   if (e) {
-    e.turnId = turnId;
-    e.phase = "started";
-    e.updatedAt = Date.now();
+    e.turnId = turnId; // record regardless of phase advancement outcome
+    const changed = advance(e, "started");
     writeAll(all);
+    void changed;
   }
 }
 
@@ -69,6 +85,22 @@ export function journalMarkStarted(threadId: string, turnId: string): void {
 export function journalMarkCompleted(threadId: string): void {
   const all = readAll();
   if (all[threadId]) {
+    delete all[threadId];
+    writeAll(all);
+  }
+}
+
+/**
+ * Turn/start definitively did NOT reach app-server (e.g. the stdin write
+ * itself failed, or app-server returned an explicit JSON-RPC rejection).
+ * Only call this for failures where non-delivery is certain -- a timeout or
+ * a dropped connection means the request's fate is genuinely unknown, and
+ * the entry must be left for reconciliation instead of discarded here.
+ */
+export function journalAbort(threadId: string, requestId: string): void {
+  const all = readAll();
+  const e = all[threadId];
+  if (e && e.requestId === requestId && e.phase === "prepared") {
     delete all[threadId];
     writeAll(all);
   }

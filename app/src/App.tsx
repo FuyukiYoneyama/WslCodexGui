@@ -32,6 +32,7 @@ import {
   parseOrReport,
 } from "./schemas";
 import {
+  journalAbort,
   journalGet,
   journalMarkCompleted,
   journalMarkSent,
@@ -47,6 +48,18 @@ type ConnState = "disconnected" | "connecting" | "connected" | "disconnecting";
 const DEFAULT_CODEX_PATH = "/home/user/.nvm/versions/node/v22.22.2/bin/codex";
 const DEFAULT_PROJECT_PATH = "/home/user";
 const ADD_NEW_VALUE = "__add_new__";
+
+// Server-initiated requests we know how to render as an approval card.
+// Anything else surfaces as an explicit "unsupported" banner instead of
+// silently (and confusingly) appearing in the approval modal with blank
+// fields (spec 7.3 is approval-specific; other server request kinds would
+// need their own UI before being routed anywhere).
+const APPROVAL_METHODS = new Set([
+  "item/commandExecution/requestApproval",
+  "item/fileChange/requestApproval",
+  "execCommandApproval",
+  "applyPatchApproval",
+]);
 
 function loadStringList(key: string, fallback: string[]): string[] {
   try {
@@ -391,7 +404,14 @@ export default function App() {
         if (!isCurrent(ev.payload.connectionId)) return;
         const req = parseOrReport(ServerRequestSchema, ev.payload, "server-request", setErrorBanner);
         if (!req) return;
-        setApprovals((prev) => [...prev, req as ServerRequest]);
+        // Only route known approval-flavored requests into the approval
+        // modal; anything else would render as a confusing/blank approval
+        // card instead of being visibly unhandled.
+        if (APPROVAL_METHODS.has(req.method)) {
+          setApprovals((prev) => [...prev, req as ServerRequest]);
+        } else {
+          setErrorBanner(`未対応のserver request: ${req.method}`);
+        }
       })
     );
 
@@ -478,15 +498,36 @@ export default function App() {
   // F-08c reconciliation: if a journal entry from a previous (possibly
   // crashed) session is still open for this thread, resolve it against the
   // thread's own last turn status instead of guessing. Never resends.
-  const reconcileJournal = (threadId: string, turns: { status: string }[]) => {
+  const reconcileJournal = (threadId: string, turns: { id: string; status: string }[]) => {
     const entry = journalGet(threadId);
     if (!entry) return;
-    journalMarkCompleted(threadId); // we've now surfaced/consumed it either way
-    const lastTurn = turns[turns.length - 1];
-    const status = lastTurn?.status ?? "状態不明";
-    if (status !== "completed") {
+
+    if (!entry.turnId) {
+      // Never confirmed started server-side (still "prepared"/"sent" when
+      // the app last closed) -- there's no ID to match against, so we
+      // genuinely can't tell whether a turn exists. Leave the entry in
+      // place rather than guessing; surface it so it isn't silently lost.
       setErrorBanner(
-        `前回のセッションで未完了だったturn（スレッド ${threadId.slice(0, 8)}…）の状態: ${status}。自動再送はしていません。`
+        `前回のセッションで送信中だった可能性のあるturn（スレッド ${threadId.slice(0, 8)}…）の状態が確認できません。自動再送はしていません。`
+      );
+      return;
+    }
+
+    const targetTurn = turns.find((t) => t.id === entry.turnId);
+    if (!targetTurn) {
+      // Matched by ID but not found in what thread/resume returned (could be
+      // paginated out, or genuinely missing) -- still unresolved, keep it.
+      setErrorBanner(
+        `前回のセッションのturn（${entry.turnId.slice(0, 8)}…）が見つかりません。状態不明のため自動再送はしていません。`
+      );
+      return;
+    }
+
+    // Only now do we have a definitive answer -- safe to clear.
+    journalMarkCompleted(threadId);
+    if (targetTurn.status !== "completed") {
+      setErrorBanner(
+        `前回のセッションで未完了だったturn（${entry.turnId.slice(0, 8)}…）の状態: ${targetTurn.status}。自動再送はしていません。`
       );
     }
   };
@@ -841,6 +882,19 @@ export default function App() {
       });
       journalMarkSent(activeThreadId, requestId);
     } catch (e) {
+      // Only discard the journal entry when non-delivery is certain (the
+      // stdin write itself failed, or app-server explicitly rejected the
+      // request). A timeout or a dropped connection leaves the request's
+      // fate genuinely unknown -- the entry must survive for reconciliation
+      // rather than being cleared here, or a turn that actually started
+      // server-side could get silently forgotten.
+      const msg = String(e);
+      const ambiguous =
+        msg.includes("timeout waiting for response") ||
+        msg.includes("connection closed while waiting for response");
+      if (!ambiguous) {
+        journalAbort(activeThreadId, requestId);
+      }
       setErrorBanner(`turn/start failed: ${e}`);
     }
   };
