@@ -11,6 +11,7 @@ import type {
   InitializeResponse,
   Model,
   Notification,
+  RequestId,
   ServerRequest,
   Thread,
   ThreadItem,
@@ -39,6 +40,7 @@ import {
   journalMarkStarted,
   journalPrepare,
 } from "./journal";
+import { latestInProgressTurnId, sameImageContext, turnIsTerminal, type ImageContext } from "./stateLogic";
 import "./App.css";
 
 type ConnState = "disconnected" | "connecting" | "connected" | "disconnecting";
@@ -75,6 +77,12 @@ interface DisplayItem {
   key: string;
   item: ThreadItem;
   streamingText?: string;
+}
+
+interface PastedImage extends ImageContext {
+  id: string;
+  wslPath: string;
+  previewUrl: string;
 }
 
 // `connect`/`rpc_request` reject with a structured RpcFailure object;
@@ -152,12 +160,14 @@ export default function App() {
   const [activeTurnId, setActiveTurnId] = useState<string | null>(null);
   const [items, setItems] = useState<DisplayItem[]>([]);
   const [approvals, setApprovals] = useState<ServerRequest[]>([]);
+  const [approvalRespondingId, setApprovalRespondingId] = useState<RequestId | null>(null);
   const [input, setInput] = useState("");
   // Images pasted from the clipboard, staged until send() attaches them to
   // the turn as UserInput's localImage (app-server reads them from a WSL
   // temp path — see save_pasted_image in lib.rs). previewUrl is a browser
   // object URL for the thumbnail only; wslPath is what actually gets sent.
-  const [pastedImages, setPastedImages] = useState<{ id: string; wslPath: string; previewUrl: string }[]>([]);
+  const [pastedImages, setPastedImages] = useState<PastedImage[]>([]);
+  const [imageSavesPending, setImageSavesPending] = useState(0);
   const [errorBanner, setErrorBanner] = useState<string | null>(null);
   const [stderrLog, setStderrLog] = useState<string[]>([]);
 
@@ -180,12 +190,56 @@ export default function App() {
   // Refs mirroring state that event handlers need without re-subscribing.
   const activeThreadIdRef = useRef<string | null>(null);
   activeThreadIdRef.current = activeThreadId;
+  const distroRef = useRef(distro);
+  distroRef.current = distro;
+  const pastedImagesRef = useRef<PastedImage[]>([]);
+  pastedImagesRef.current = pastedImages;
+  const pasteGenerationRef = useRef(0);
+  const imagesAwaitingTurnRef = useRef<PastedImage[]>([]);
+  const turnImagesRef = useRef<Map<string, PastedImage[]>>(new Map());
 
   // Tags the Connection currently considered "live". Every Rust-emitted
   // event carries connectionId; events from a Connection we've already
   // replaced (e.g. its delayed "disconnected" arriving after a new
   // connect() already succeeded) are ignored instead of corrupting state.
   const connectionIdRef = useRef<string | null>(null);
+
+  const deletePastedImageFile = useCallback((image: Pick<PastedImage, "distro" | "wslPath">) => {
+    void invoke("delete_pasted_image", { distro: image.distro, path: image.wslPath }).catch((error) => {
+      setErrorBanner(`一時画像の削除に失敗しました: ${error}`);
+    });
+  }, []);
+
+  const discardPastedImages = useCallback(() => {
+    pasteGenerationRef.current += 1;
+    const images = pastedImagesRef.current;
+    pastedImagesRef.current = [];
+    setPastedImages([]);
+    for (const image of images) {
+      URL.revokeObjectURL(image.previewUrl);
+      deletePastedImageFile(image);
+    }
+  }, [deletePastedImageFile]);
+
+  const discardSentImages = useCallback(() => {
+    const images = [
+      ...imagesAwaitingTurnRef.current,
+      ...Array.from(turnImagesRef.current.values()).flat(),
+    ];
+    imagesAwaitingTurnRef.current = [];
+    turnImagesRef.current.clear();
+    for (const image of images) deletePastedImageFile(image);
+  }, [deletePastedImageFile]);
+
+  useEffect(() => () => {
+    pasteGenerationRef.current += 1;
+    for (const image of pastedImagesRef.current) {
+      URL.revokeObjectURL(image.previewUrl);
+      deletePastedImageFile(image);
+    }
+    pastedImagesRef.current = [];
+    discardSentImages();
+  }, [deletePastedImageFile, discardSentImages]);
 
   // Delta batching (N-18): accumulate per-item text, flush on a ~33ms tick.
   const deltaBufRef = useRef<Map<string, string>>(new Map());
@@ -299,7 +353,7 @@ export default function App() {
             const wslPaths: string[] = [];
             for (const winPath of p.paths) {
               try {
-                wslPaths.push(await invoke<string>("windows_path_to_wsl", { path: winPath }));
+                wslPaths.push(await invoke<string>("windows_path_to_wsl", { path: winPath, distro }));
               } catch (e) {
                 setErrorBanner(`パス変換に失敗しました（${winPath}）: ${e}`);
               }
@@ -317,7 +371,7 @@ export default function App() {
       cancelled = true;
       unlisten?.();
     };
-  }, []);
+  }, [distro]);
 
   const [showArchived, setShowArchived] = useState(false);
 
@@ -367,6 +421,17 @@ export default function App() {
         if (!isCurrent(ev.payload.connectionId)) return; // stale connection's event
         const { method, params } = ev.payload;
         const threadId = (params as { threadId?: string } | undefined)?.threadId;
+        // Image cleanup is connection-wide, so process turn lifecycle even
+        // when its thread is not the one currently displayed.
+        const lifecycleTurnId = (params as { turn?: { id?: string } } | undefined)?.turn?.id;
+        if (method === "turn/started" && lifecycleTurnId && imagesAwaitingTurnRef.current.length > 0) {
+          turnImagesRef.current.set(lifecycleTurnId, imagesAwaitingTurnRef.current);
+          imagesAwaitingTurnRef.current = [];
+        } else if (method === "turn/completed" && lifecycleTurnId) {
+          const completedImages = turnImagesRef.current.get(lifecycleTurnId) ?? [];
+          turnImagesRef.current.delete(lifecycleTurnId);
+          for (const image of completedImages) deletePastedImageFile(image);
+        }
         if (threadId && threadId !== activeThreadIdRef.current) return;
 
         switch (method) {
@@ -453,6 +518,13 @@ export default function App() {
           setApprovals((prev) => [...prev, req as ServerRequest]);
         } else {
           setErrorBanner(`未対応のserver request: ${req.method}`);
+          void invoke("reject_server_request", {
+            id: req.id,
+            code: -32601,
+            message: `Unsupported server request method: ${req.method}`,
+          }).catch((error) => {
+            setErrorBanner(`未対応server requestへのエラー応答に失敗: ${error}`);
+          });
         }
       })
     );
@@ -470,6 +542,8 @@ export default function App() {
         connectionIdRef.current = null;
         setConnState("disconnected");
         setActiveTurnId(null);
+        discardPastedImages();
+        discardSentImages();
         // Pending approvals died with the connection (spec 7.3: 失効).
         setApprovals([]);
       })
@@ -485,7 +559,7 @@ export default function App() {
     return () => {
       for (const u of unlisteners) u.then((f) => f());
     };
-  }, [scheduleFlush, fetchUsage]);
+  }, [scheduleFlush, fetchUsage, discardPastedImages, discardSentImages, deletePastedImageFile]);
 
   // --- actions ---
   const doConnect = async (): Promise<boolean> => {
@@ -495,6 +569,7 @@ export default function App() {
       );
       return false;
     }
+    discardPastedImages();
     localStorage.setItem("distro", distro);
     localStorage.setItem("codexPath", codexPath);
     localStorage.setItem("provider", provider);
@@ -549,6 +624,8 @@ export default function App() {
       setActiveTurnId(null);
       setItems([]);
       setApprovals([]);
+      discardPastedImages();
+      discardSentImages();
       setUsagePanel(null);
       setUsageModalOpen(false);
       setDefaultModelLabel(null);
@@ -561,7 +638,10 @@ export default function App() {
   // F-08c reconciliation: if a journal entry from a previous (possibly
   // crashed) session is still open for this thread, resolve it against the
   // thread's own last turn status instead of guessing. Never resends.
-  const reconcileJournal = (threadId: string, turns: { id: string; status: string }[]) => {
+  const reconcileJournal = (
+    threadId: string,
+    turns: Pick<Thread["turns"][number], "id" | "status">[],
+  ) => {
     const entry = journalGet(threadId);
     if (!entry) return;
 
@@ -586,6 +666,13 @@ export default function App() {
       return;
     }
 
+    if (!turnIsTerminal(targetTurn.status)) {
+      setErrorBanner(
+        `前回のturn（${entry.turnId.slice(0, 8)}…）は現在も実行中です。完了通知を待っています。`
+      );
+      return;
+    }
+
     // Only now do we have a definitive answer -- safe to clear.
     journalMarkCompleted(threadId);
     if (targetTurn.status !== "completed") {
@@ -597,13 +684,14 @@ export default function App() {
 
   const resumeThread = async (threadId: string) => {
     setErrorBanner(null);
+    if (threadId !== activeThreadIdRef.current) discardPastedImages();
     try {
       const raw = await invoke("rpc_request", { method: "thread/resume", params: { threadId } });
       const res = parseOrReport(ThreadResumeResponseSchema, raw, "thread/resume", setErrorBanner);
       if (!res) return;
       const thread = res.thread as unknown as Thread;
       setActiveThreadId(thread.id);
-      setActiveTurnId(null);
+      setActiveTurnId(latestInProgressTurnId(thread.turns));
       setThreadTokenUsage(null); // stale until the next tokenUsage/updated for this thread
       setItems(
         thread.turns.flatMap((t) =>
@@ -666,6 +754,7 @@ export default function App() {
       await invoke("rpc_request", { method: "thread/archive", params: { threadId: t.id } });
       setThreads((prev) => prev.filter((th) => th.id !== t.id));
       if (activeThreadId === t.id) {
+        discardPastedImages();
         setActiveThreadId(null);
         setActiveTurnId(null);
         setItems([]);
@@ -706,6 +795,7 @@ export default function App() {
       });
       const res = parseOrReport(ThreadStartResponseSchema, raw, "thread/start", setErrorBanner);
       if (!res) return;
+      discardPastedImages();
       setActiveThreadId(res.thread.id);
       setItems([]);
       setThreadTokenUsage(null);
@@ -744,7 +834,7 @@ export default function App() {
       const { open } = await import("@tauri-apps/plugin-dialog");
       const picked = await open({ directory: true, defaultPath: startUnc });
       if (!picked || typeof picked !== "string") return;
-      const wslPath = await invoke<string>("windows_path_to_wsl", { path: picked });
+      const wslPath = await invoke<string>("windows_path_to_wsl", { path: picked, distro });
       const next = projectPaths.includes(wslPath) ? projectPaths : [...projectPaths, wslPath].sort();
       setProjectPaths(next);
       localStorage.setItem("projectPaths", JSON.stringify(next));
@@ -804,16 +894,20 @@ export default function App() {
   };
 
   const answerApproval = async (req: ServerRequest, decision: ApprovalDecision) => {
+    if (approvalRespondingId !== null) return;
+    setApprovalRespondingId(req.id);
     try {
       await invoke("respond_server_request", {
         id: req.id,
         result: { decision },
       });
+      // The request is consumed only after the response was written. On
+      // failure it remains visible so the user can retry the same id.
+      setApprovals((prev) => prev.filter((a) => a.id !== req.id));
     } catch (e) {
       setErrorBanner(`承認応答の送信に失敗: ${e}`);
     } finally {
-      // Never answer the same request id twice (spec 7.3).
-      setApprovals((prev) => prev.filter((a) => a.id !== req.id));
+      setApprovalRespondingId(null);
     }
   };
 
@@ -1017,24 +1111,54 @@ export default function App() {
     const items = Array.from(e.clipboardData.items).filter((i) => i.type.startsWith("image/"));
     if (items.length === 0) return;
     e.preventDefault();
+    const connectionId = connectionIdRef.current;
+    const threadId = activeThreadIdRef.current;
+    if (!connectionId || !threadId || connState !== "connected") return;
+    const context: ImageContext = { connectionId, distro, threadId };
+    const generation = pasteGenerationRef.current;
     for (const item of items) {
       const blob = item.getAsFile();
       if (!blob) continue;
       const ext = item.type.split("/")[1]?.replace("jpeg", "jpg") || "png";
+      setImageSavesPending((count) => count + 1);
       void (async () => {
         try {
           const bytes = new Uint8Array(await blob.arrayBuffer());
           const wslPath = await invoke<string>("save_pasted_image", {
-            distro,
+            distro: context.distro,
             bytes: Array.from(bytes),
             ext,
           });
-          setPastedImages((prev) => [
-            ...prev,
-            { id: crypto.randomUUID(), wslPath, previewUrl: URL.createObjectURL(blob) },
-          ]);
+          const currentConnectionId = connectionIdRef.current;
+          const currentThreadId = activeThreadIdRef.current;
+          const stillCurrent =
+            generation === pasteGenerationRef.current &&
+            currentConnectionId !== null &&
+            currentThreadId !== null &&
+            sameImageContext(context, {
+              connectionId: currentConnectionId,
+              distro: distroRef.current,
+              threadId: currentThreadId,
+            });
+          if (!stillCurrent) {
+            deletePastedImageFile({ distro: context.distro, wslPath });
+            return;
+          }
+          const image: PastedImage = {
+            ...context,
+            id: crypto.randomUUID(),
+            wslPath,
+            previewUrl: URL.createObjectURL(blob),
+          };
+          setPastedImages((prev) => {
+            const next = [...prev, image];
+            pastedImagesRef.current = next;
+            return next;
+          });
         } catch (err) {
           setErrorBanner(`画像の貼り付けに失敗しました: ${err}`);
+        } finally {
+          setImageSavesPending((count) => Math.max(0, count - 1));
         }
       })();
     }
@@ -1043,14 +1167,19 @@ export default function App() {
   const removePastedImage = (id: string) => {
     setPastedImages((prev) => {
       const target = prev.find((p) => p.id === id);
-      if (target) URL.revokeObjectURL(target.previewUrl);
-      return prev.filter((p) => p.id !== id);
+      if (target) {
+        URL.revokeObjectURL(target.previewUrl);
+        deletePastedImageFile(target);
+      }
+      const next = prev.filter((p) => p.id !== id);
+      pastedImagesRef.current = next;
+      return next;
     });
   };
 
   const send = async () => {
     const text = input.trim();
-    if ((!text && pastedImages.length === 0) || !activeThreadId || activeTurnId) return;
+    if ((!text && pastedImages.length === 0) || !activeThreadId || activeTurnId || imageSavesPending > 0) return;
 
     // "/name <arg>" typed out and submitted with Enter (not selected from
     // the dropdown, which already handled parameterless commands earlier).
@@ -1068,12 +1197,14 @@ export default function App() {
     const images = pastedImages;
     setInput("");
     setPastedImages([]);
+    pastedImagesRef.current = [];
     for (const img of images) URL.revokeObjectURL(img.previewUrl);
     setErrorBanner(null);
     // N-22: prepare-before-send so a crash between here and turn/started
     // still leaves a record that this thread had a turn in flight.
     const requestId = crypto.randomUUID();
     journalPrepare(activeThreadId, requestId);
+    if (images.length > 0) imagesAwaitingTurnRef.current = images;
     try {
       // N-17: sends are serialized — input is disabled while a turn runs.
       await invoke("rpc_request", {
@@ -1102,6 +1233,10 @@ export default function App() {
       const certainlyNotDelivered = kind === "write_failed" || kind === "server_rejected";
       if (certainlyNotDelivered) {
         journalAbort(activeThreadId, requestId);
+        if (imagesAwaitingTurnRef.current === images) {
+          imagesAwaitingTurnRef.current = [];
+          for (const image of images) deletePastedImageFile(image);
+        }
       }
       setErrorBanner(`turn/start failed: ${rpcErrorText(e)}`);
     }
@@ -1422,6 +1557,7 @@ export default function App() {
                 ))}
               </div>
             )}
+            {imageSavesPending > 0 && <div className="working">画像を保存中…</div>}
             <div className="composer">
               <textarea
                 ref={composerInputRef}
@@ -1439,7 +1575,12 @@ export default function App() {
               />
               <button
                 onClick={send}
-                disabled={(!input.trim() && pastedImages.length === 0) || !activeThreadId || !!activeTurnId}
+                disabled={
+                  (!input.trim() && pastedImages.length === 0) ||
+                  !activeThreadId ||
+                  !!activeTurnId ||
+                  imageSavesPending > 0
+                }
               >
                 送信
               </button>
@@ -1462,6 +1603,7 @@ export default function App() {
                   key={i}
                   className={typeof d === "string" && (d === "cancel" || d === "decline") ? "danger" : "primary"}
                   onClick={() => answerApproval(approval, d)}
+                  disabled={approvalRespondingId !== null}
                 >
                   {decisionLabel(d)}
                 </button>

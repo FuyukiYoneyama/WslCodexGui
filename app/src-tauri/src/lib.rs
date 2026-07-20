@@ -6,6 +6,41 @@ use std::sync::Arc;
 use tauri::{AppHandle, Manager, State};
 use tokio::sync::Mutex;
 
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
+
+fn validate_distro(distro: &str) -> Result<(), String> {
+    if distro.trim().is_empty()
+        || distro.chars().any(|c| {
+            c.is_control() || matches!(c, '\\' | '/' | ':' | '*' | '?' | '"' | '<' | '>' | '|')
+        })
+    {
+        return Err("invalid WSL distribution name".into());
+    }
+    Ok(())
+}
+
+fn pasted_image_filename(path: &str) -> Result<&str, String> {
+    let filename = path
+        .strip_prefix("/tmp/")
+        .ok_or("pasted image path is outside /tmp")?;
+    let generated = filename
+        .strip_prefix("wslcodexgui-paste-")
+        .ok_or("not a WslCodexGui pasted image path")?;
+    let (uuid, ext) = generated
+        .rsplit_once('.')
+        .ok_or("invalid WslCodexGui pasted image filename")?;
+    if filename.contains(['/', '\\'])
+        || uuid::Uuid::parse_str(uuid).is_err()
+        || ext.is_empty()
+        || ext.len() > 10
+        || !ext.chars().all(|c| c.is_ascii_alphanumeric())
+    {
+        return Err("not a WslCodexGui pasted image path".into());
+    }
+    Ok(filename)
+}
+
 /// At most one live app-server connection (primary architecture: the child
 /// process is owned by the GUI and always "owned" per N-14).
 struct AppState {
@@ -31,7 +66,7 @@ async fn connect(
 
     // initialize -> initialized handshake (spec 5.2; mandatory before any
     // other method).
-    let init = conn
+    let init = match conn
         .request(
             "initialize",
             Some(json!({
@@ -44,8 +79,18 @@ async fn connect(
                 "capabilities": null,
             })),
         )
-        .await?;
-    conn.notify("initialized", None).await.map_err(RpcFailure::from)?;
+        .await
+    {
+        Ok(init) => init,
+        Err(error) => {
+            conn.shutdown().await;
+            return Err(error);
+        }
+    };
+    if let Err(error) = conn.notify("initialized", None).await {
+        conn.shutdown().await;
+        return Err(RpcFailure::from(error));
+    }
 
     // Merge connectionId into the response so the frontend can tag its own
     // "current connection" and ignore stale events from a replaced one.
@@ -98,6 +143,18 @@ async fn respond_server_request(
     conn.respond(id, result).await
 }
 
+/// Return a JSON-RPC error for a server request this GUI does not support.
+#[tauri::command]
+async fn reject_server_request(
+    state: State<'_, AppState>,
+    id: Value,
+    code: i64,
+    message: String,
+) -> Result<(), String> {
+    let conn = state.conn.lock().await.clone().ok_or("not connected")?;
+    conn.reject(id, code, message).await
+}
+
 /// Write a pasted clipboard image to a WSL temp file and return its Linux
 /// path, so it can be attached to a turn as UserInput's `localImage`
 /// (app-server runs inside WSL and can't read a Windows clipboard/path
@@ -106,6 +163,10 @@ async fn respond_server_request(
 /// this app (no shell/wsl.exe invocation needed for a plain file write).
 #[tauri::command]
 async fn save_pasted_image(distro: String, bytes: Vec<u8>, ext: String) -> Result<String, String> {
+    validate_distro(&distro)?;
+    if ext.is_empty() || ext.len() > 10 || !ext.chars().all(|c| c.is_ascii_alphanumeric()) {
+        return Err("invalid pasted image extension".into());
+    }
     let filename = format!("wslcodexgui-paste-{}.{}", uuid::Uuid::new_v4(), ext);
     let win_path = format!("\\\\wsl.localhost\\{distro}\\tmp\\{filename}");
     tokio::fs::write(&win_path, &bytes)
@@ -114,13 +175,34 @@ async fn save_pasted_image(distro: String, bytes: Vec<u8>, ext: String) -> Resul
     Ok(format!("/tmp/{filename}"))
 }
 
+/// Remove only files created by `save_pasted_image`; arbitrary WSL paths are
+/// deliberately rejected so the frontend cannot turn this into a delete API.
+#[tauri::command]
+async fn delete_pasted_image(distro: String, path: String) -> Result<(), String> {
+    validate_distro(&distro)?;
+    let filename = pasted_image_filename(&path)?;
+    let win_path = format!("\\\\wsl.localhost\\{distro}\\tmp\\{filename}");
+    match tokio::fs::remove_file(&win_path).await {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!("failed to delete pasted image: {error}")),
+    }
+}
+
 /// Open an interactive WSL shell at `path` in its own console window.
-/// `cmd /c start` detaches the window from this process; `--cd` is a
-/// wsl.exe-native flag (no shell string is built from `path`).
+/// `wsl.exe` is started directly so neither `path` nor `distro` is parsed by
+/// cmd.exe. CREATE_NEW_CONSOLE gives the interactive shell its own window.
 #[tauri::command]
 fn open_wsl_terminal(distro: String, path: String) -> Result<(), String> {
-    std::process::Command::new("cmd.exe")
-        .args(["/c", "start", "", "wsl.exe", "-d", &distro, "--cd", &path])
+    validate_distro(&distro)?;
+    if !path.starts_with('/') {
+        return Err("WSL terminal path must be absolute".into());
+    }
+    let mut command = std::process::Command::new("wsl.exe");
+    command.args(["-d", &distro, "--cd", &path]);
+    #[cfg(windows)]
+    command.creation_flags(0x0000_0010); // CREATE_NEW_CONSOLE
+    command
         .spawn()
         .map_err(|e| format!("failed to open WSL terminal: {e}"))?;
     Ok(())
@@ -150,7 +232,8 @@ async fn list_ollama_models() -> Result<Vec<OllamaModelInfo>, String> {
         return Err(format!("curl.exe exited with {}", output.status));
     }
     let body = String::from_utf8_lossy(&output.stdout);
-    let json: Value = serde_json::from_str(&body).map_err(|e| format!("invalid JSON from Ollama: {e}"))?;
+    let json: Value =
+        serde_json::from_str(&body).map_err(|e| format!("invalid JSON from Ollama: {e}"))?;
     let models = json
         .get("models")
         .and_then(|v| v.as_array())
@@ -163,7 +246,10 @@ async fn list_ollama_models() -> Result<Vec<OllamaModelInfo>, String> {
                 .get("details")
                 .and_then(|d| d.get("context_length"))
                 .and_then(|v| v.as_u64());
-            Some(OllamaModelInfo { name, context_length })
+            Some(OllamaModelInfo {
+                name,
+                context_length,
+            })
         })
         .collect();
     result.sort_by(|a, b| a.name.cmp(&b.name));
@@ -174,6 +260,10 @@ async fn list_ollama_models() -> Result<Vec<OllamaModelInfo>, String> {
 /// \\wsl.localhost\<distro>\... UNC form (spec 7.1).
 #[tauri::command]
 fn open_in_explorer(distro: String, path: String) -> Result<(), String> {
+    validate_distro(&distro)?;
+    if !path.starts_with('/') {
+        return Err("Explorer path must be an absolute WSL path".into());
+    }
     let win_path = format!(
         "\\\\wsl.localhost\\{}\\{}",
         distro,
@@ -196,6 +286,10 @@ fn open_in_explorer(distro: String, path: String) -> Result<(), String> {
 /// window that rendered solid black until it lost and regained focus.
 #[tauri::command]
 fn reveal_in_explorer(distro: String, path: String) -> Result<(), String> {
+    validate_distro(&distro)?;
+    if !path.starts_with('/') {
+        return Err("Explorer path must be an absolute WSL path".into());
+    }
     let win_path = format!(
         "\\\\wsl.localhost\\{}\\{}",
         distro,
@@ -239,8 +333,28 @@ fn resolve_drive_mapping(drive: &str) -> Option<String> {
 ///  - a drive letter that `net use` maps to one of the above -> `/...`
 ///  - any other local drive letter -> `/mnt/<letter>/...` (WSL's own
 ///    auto-mount convention for the Windows filesystem)
+fn strip_wsl_unc(s: &str, expected_distro: &str) -> Result<Option<String>, String> {
+    let lower = s.to_ascii_lowercase();
+    for prefix in ["\\\\wsl.localhost\\", "\\\\wsl$\\"] {
+        if lower.starts_with(prefix) {
+            let rest = &s[prefix.len()..];
+            let mut parts = rest.splitn(2, '\\');
+            let actual_distro = parts.next().unwrap_or("");
+            if !actual_distro.eq_ignore_ascii_case(expected_distro) {
+                return Err(format!(
+                    "path belongs to WSL distribution '{actual_distro}', not '{expected_distro}'"
+                ));
+            }
+            let tail = parts.next().unwrap_or("");
+            return Ok(Some(format!("/{}", tail.replace('\\', "/"))));
+        }
+    }
+    Ok(None)
+}
+
 #[tauri::command]
-fn windows_path_to_wsl(path: String) -> Result<String, String> {
+fn windows_path_to_wsl(path: String, distro: String) -> Result<String, String> {
+    validate_distro(&distro)?;
     let mut normalized = path.replace('/', "\\");
     // Explorer includes a trailing separator when the dropped item is a
     // folder (unlike files); strip it so the converted path doesn't end up
@@ -250,17 +364,7 @@ fn windows_path_to_wsl(path: String) -> Result<String, String> {
         normalized.pop();
     }
 
-    let strip_wsl_unc = |s: &str| -> Option<String> {
-        for prefix in ["\\\\wsl.localhost\\", "\\\\wsl$\\"] {
-            if let Some(rest) = s.strip_prefix(prefix) {
-                let tail = rest.splitn(2, '\\').nth(1).unwrap_or("");
-                return Some(format!("/{}", tail.replace('\\', "/")));
-            }
-        }
-        None
-    };
-
-    if let Some(p) = strip_wsl_unc(&normalized) {
+    if let Some(p) = strip_wsl_unc(&normalized, &distro)? {
         return Ok(p);
     }
 
@@ -270,7 +374,7 @@ fn windows_path_to_wsl(path: String) -> Result<String, String> {
 
         if let Some(unc) = resolve_drive_mapping(&drive) {
             let combined = format!("{}{}", unc.trim_end_matches('\\'), rest);
-            if let Some(p) = strip_wsl_unc(&combined) {
+            if let Some(p) = strip_wsl_unc(&combined, &distro)? {
                 return Ok(p);
             }
         }
@@ -307,13 +411,68 @@ pub fn run() {
             disconnect,
             rpc_request,
             respond_server_request,
+            reject_server_request,
             open_wsl_terminal,
             open_in_explorer,
             reveal_in_explorer,
             save_pasted_image,
+            delete_pasted_image,
             windows_path_to_wsl,
             list_ollama_models
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{pasted_image_filename, strip_wsl_unc, validate_distro};
+
+    #[test]
+    fn unc_path_for_selected_distro_is_converted() {
+        let converted = strip_wsl_unc(
+            r"\\wsl.localhost\Ubuntu-24.04\home\user\project",
+            "Ubuntu-24.04",
+        )
+        .unwrap();
+        assert_eq!(converted.as_deref(), Some("/home/user/project"));
+    }
+
+    #[test]
+    fn unc_path_for_another_distro_is_rejected() {
+        let error = strip_wsl_unc(
+            r"\\wsl.localhost\Ubuntu\home\user\project",
+            "Ubuntu-24.04",
+        )
+        .unwrap_err();
+        assert!(error.contains("Ubuntu"));
+        assert!(error.contains("Ubuntu-24.04"));
+    }
+
+    #[test]
+    fn unc_prefix_and_distro_match_case_insensitively() {
+        let converted = strip_wsl_unc(r"\\WSL$\ubuntu\tmp\x", "Ubuntu").unwrap();
+        assert_eq!(converted.as_deref(), Some("/tmp/x"));
+    }
+
+    #[test]
+    fn pasted_image_delete_scope_is_narrow() {
+        let valid = "/tmp/wslcodexgui-paste-550e8400-e29b-41d4-a716-446655440000.png";
+        assert_eq!(
+            pasted_image_filename(valid).unwrap(),
+            "wslcodexgui-paste-550e8400-e29b-41d4-a716-446655440000.png"
+        );
+        assert!(pasted_image_filename("/tmp/unrelated.png").is_err());
+        assert!(pasted_image_filename("/home/user/wslcodexgui-paste-1234.png").is_err());
+        assert!(pasted_image_filename("/tmp/wslcodexgui-paste-not-a-uuid.png").is_err());
+        assert!(pasted_image_filename("/tmp/wslcodexgui-paste-dir/file.png").is_err());
+    }
+
+    #[test]
+    fn invalid_distro_components_are_rejected() {
+        assert!(validate_distro("Ubuntu-24.04").is_ok());
+        assert!(validate_distro("").is_err());
+        assert!(validate_distro("Ubuntu\\other").is_err());
+        assert!(validate_distro("Ubuntu&cmd").is_ok());
+    }
 }

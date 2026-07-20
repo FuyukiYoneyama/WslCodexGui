@@ -55,7 +55,10 @@ pub struct RpcFailure {
 
 impl RpcFailure {
     fn new(kind: &'static str, message: impl Into<String>) -> Self {
-        RpcFailure { kind, message: message.into() }
+        RpcFailure {
+            kind,
+            message: message.into(),
+        }
     }
 }
 
@@ -149,13 +152,21 @@ impl Connection {
                             match serde_json::from_str::<Value>(&line) {
                                 Ok(msg) => conn.route(&app, msg).await,
                                 Err(_) => {
-                                    conn.emit_with_id(&app, "codex:contamination", json!({ "line": line }));
+                                    conn.emit_with_id(
+                                        &app,
+                                        "codex:contamination",
+                                        json!({ "line": line }),
+                                    );
                                 }
                             }
                         }
                         Ok(None) => break, // EOF
                         Err(e) => {
-                            conn.emit_with_id(&app, "codex:read-error", json!({ "message": e.to_string() }));
+                            conn.emit_with_id(
+                                &app,
+                                "codex:read-error",
+                                json!({ "message": e.to_string() }),
+                            );
                             break;
                         }
                     }
@@ -214,7 +225,11 @@ impl Connection {
             }
             self.emit_with_id(app, "codex:orphan-response", msg);
         } else {
-            self.emit_with_id(app, "codex:contamination", json!({ "line": msg.to_string() }));
+            self.emit_with_id(
+                app,
+                "codex:contamination",
+                json!({ "line": msg.to_string() }),
+            );
         }
     }
 
@@ -226,7 +241,10 @@ impl Connection {
             .write_all(line.as_bytes())
             .await
             .map_err(|e| format!("stdin write failed: {e}"))?;
-        stdin.flush().await.map_err(|e| format!("stdin flush failed: {e}"))
+        stdin
+            .flush()
+            .await
+            .map_err(|e| format!("stdin flush failed: {e}"))
     }
 
     /// Send a request and await its response (default timeout 120s — turns
@@ -254,12 +272,18 @@ impl Connection {
                 // Sender dropped without sending at all (shouldn't normally
                 // happen given the cleanup path above, but treat the same
                 // way: delivery is unknown, not certain-failed).
-                Err(RpcFailure::new("connection_lost", "connection closed while waiting for response"))
+                Err(RpcFailure::new(
+                    "connection_lost",
+                    "connection closed while waiting for response",
+                ))
             }
             Err(_) => {
                 self.pending.lock().await.remove(&id);
                 // We stopped waiting; app-server may still be processing it.
-                Err(RpcFailure::new("response_timeout", format!("timeout waiting for response to {method}")))
+                Err(RpcFailure::new(
+                    "response_timeout",
+                    format!("timeout waiting for response to {method}"),
+                ))
             }
         }
     }
@@ -276,6 +300,15 @@ impl Connection {
     /// `id` is passed through verbatim (RequestId may be string or number).
     pub async fn respond(&self, id: Value, result: Value) -> Result<(), String> {
         self.write_line(&json!({"id": id, "result": result})).await
+    }
+
+    /// Reject a server-initiated request that this client cannot handle.
+    pub async fn reject(&self, id: Value, code: i64, message: String) -> Result<(), String> {
+        self.write_line(&json!({
+            "id": id,
+            "error": { "code": code, "message": message }
+        }))
+        .await
     }
 
     /// Graceful shutdown: close stdin (EOF) and wait briefly; kill if needed.
