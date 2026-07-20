@@ -25,8 +25,8 @@ GUI（Tauri 2 + React）から操作するためのラッパーアプリです�
   Markdownとして整形表示（react-markdown + remark-gfm）
 - **スレッド管理**: 一覧表示・再開（`thread/resume`）・インライン名前変更（`thread/name/set`）。未接続時に
   スレッドを選ぶと「接続しますか？」の確認ダイアログを出してから接続
-- **プロジェクト選択**: 手入力ではなく、登録した探索ルート配下を自動スキャン（`find`、深さ2、隠しフォルダ・
-  `node_modules`・`target`を除外）してプルダウンに列挙。スレッドを開くとそのスレッド自身の`cwd`に追従
+- **プロジェクト選択**: Windowsのフォルダ選択ダイアログから`\\wsl.localhost\<distro>\...`を選択し、
+  WSLパスへ変換して登録。スレッドを開くとそのスレッド自身の`cwd`に追従
 - **承認UI**: `item/commandExecution/requestApproval`等のリクエストに含まれる`availableDecisions`
   配列から、そのリクエストで実際に有効な選択肢だけを動的にボタン化
 - **Stop**: `turn/interrupt`のみを送信し、app-serverプロセス自体は終了しない
@@ -36,7 +36,9 @@ GUI（Tauri 2 + React）から操作するためのラッパーアプリです�
   （Codex公式アカウント画面と同じ「残り○%」表記）
 - **WSLターミナル / エクスプローラーを開く**: 選択中のWSLパスに対してワンクリックで起動
 - **ドラッグ&ドロップ**: エクスプローラーからファイルをコンポーザーにドロップすると、Windowsパスを自動で
-  WSLパス（`/home/...`）に変換して挿入
+  WSLパス（`/home/...`）に変換して挿入。選択中とは別のWSLディストリのUNCパスは拒否
+- **画像貼り付け**: クリップボード画像を`Ctrl+V`で添付。保存中は送信を待たせ、接続・ディストリ・スレッドを
+  またぐ誤添付を防止。WSL側の一時画像は取り消し・turn完了・切断時に削除
 - **日本語IME対応**: 変換確定前のEnterで誤送信しない
 
 ## 動作要件
@@ -134,9 +136,11 @@ WebView2）が別途必要**です。アプリ自体はCodexの実行環境を�
 |---|---|
 | `npm run tauri dev` | 開発モードで起動（Vite HMR + Rustホットリビルド） |
 | `npm run build` | フロントエンドの型チェック + 本番ビルド（`dist/`） |
+| `npm test` | フロントエンドから抽出した純粋ロジックのNodeテスト |
 | `npx tsc --noEmit` | フロントエンドの型チェックのみ |
 | `npm run tauri build` | 配布用インストーラのビルド |
 | `cargo build`（`src-tauri/`内） | Rustバックエンドのみビルド |
+| `cargo test`（`src-tauri/`内） | Rustバックエンドのunit test |
 
 ## 初回起動時の設定
 
@@ -218,13 +222,14 @@ WSL2内の codex app-server（stdio既定モード）
 ```text
 WslCodexGui/
 ├── docs/
-│   └── 仕様書.md          # 設計仕様書（アーキテクチャ検討・検証記録）
+│   ├── 仕様書.md          # 設計仕様書（アーキテクチャ検討・検証記録）
+│   └── 残項目.md          # 未対応事項と優先順位
 ├── poc/
 │   ├── phase1-poc.mjs           # 主構成の基本動作PoC
 │   ├── phase1b-approval-stop.mjs # 承認フロー・Stop動作のPoC
 │   └── phase1c-approval-network.mjs # ネットワークコマンドでの承認要求PoC
 └── app/                    # 本体（Tauri 2 + React + TypeScript）
-    ├── src/                # フロントエンド
+    ├── src/                # フロントエンド（純粋ロジックとNodeテストを含む）
     ├── src-tauri/           # Rustバックエンド
     └── README.md            # このファイル
 ```
