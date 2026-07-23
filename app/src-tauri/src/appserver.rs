@@ -74,6 +74,34 @@ impl From<&str> for RpcFailure {
     }
 }
 
+/// Result of classifying one incoming JSONL message by which of "method"
+/// and "id" it carries (see module doc comment for the 4-way routing table).
+/// Pure and independent of AppHandle/pending-request state so it's
+/// unit-testable in isolation.
+#[derive(Debug, PartialEq, Eq)]
+enum MessageKind {
+    ServerRequest,
+    Notification,
+    /// Has "id" but no "method" -- a response to one of our own requests,
+    /// *if* `id` parses as a number matching something we're waiting on.
+    /// Carries the parsed id (None if "id" was present but non-numeric, e.g.
+    /// a string id -- this app never sends non-numeric request ids itself).
+    ResponseCandidate(Option<u64>),
+    Contamination,
+}
+
+fn classify_message(has_method: bool, has_id: bool, id: Option<u64>) -> MessageKind {
+    if has_method && has_id {
+        MessageKind::ServerRequest
+    } else if has_method {
+        MessageKind::Notification
+    } else if has_id {
+        MessageKind::ResponseCandidate(id)
+    } else {
+        MessageKind::Contamination
+    }
+}
+
 pub struct Connection {
     connection_id: String,
     stdin: Mutex<ChildStdin>,
@@ -201,35 +229,42 @@ impl Connection {
     }
 
     async fn route(&self, app: &AppHandle, msg: Value) {
+        // Classification lives in the pure classify_message() below so the
+        // 4-way routing logic itself is unit-testable without an AppHandle.
         let has_method = msg.get("method").is_some();
         let has_id = msg.get("id").is_some();
-        if has_method && has_id {
-            // Server-initiated request (approval etc.) — frontend must answer.
-            self.emit_with_id(app, "codex:server-request", msg);
-        } else if has_method {
-            self.emit_with_id(app, "codex:notification", msg);
-        } else if has_id {
-            let id = msg.get("id").and_then(Value::as_u64);
-            if let Some(id) = id {
-                if let Some(tx) = self.pending.lock().await.remove(&id) {
-                    let payload = if let Some(err) = msg.get("error") {
-                        // app-server explicitly responded with a JSON-RPC
-                        // error: delivery (and processing) is certain.
-                        Err(RpcFailure::new("server_rejected", err.to_string()))
-                    } else {
-                        Ok(msg.get("result").cloned().unwrap_or(Value::Null))
-                    };
-                    let _ = tx.send(payload);
-                    return;
-                }
+        let id = msg.get("id").and_then(Value::as_u64);
+        match classify_message(has_method, has_id, id) {
+            MessageKind::ServerRequest => {
+                // Server-initiated request (approval etc.) — frontend must answer.
+                self.emit_with_id(app, "codex:server-request", msg);
             }
-            self.emit_with_id(app, "codex:orphan-response", msg);
-        } else {
-            self.emit_with_id(
-                app,
-                "codex:contamination",
-                json!({ "line": msg.to_string() }),
-            );
+            MessageKind::Notification => {
+                self.emit_with_id(app, "codex:notification", msg);
+            }
+            MessageKind::ResponseCandidate(id) => {
+                if let Some(id) = id {
+                    if let Some(tx) = self.pending.lock().await.remove(&id) {
+                        let payload = if let Some(err) = msg.get("error") {
+                            // app-server explicitly responded with a JSON-RPC
+                            // error: delivery (and processing) is certain.
+                            Err(RpcFailure::new("server_rejected", err.to_string()))
+                        } else {
+                            Ok(msg.get("result").cloned().unwrap_or(Value::Null))
+                        };
+                        let _ = tx.send(payload);
+                        return;
+                    }
+                }
+                self.emit_with_id(app, "codex:orphan-response", msg);
+            }
+            MessageKind::Contamination => {
+                self.emit_with_id(
+                    app,
+                    "codex:contamination",
+                    json!({ "line": msg.to_string() }),
+                );
+            }
         }
     }
 
@@ -324,5 +359,52 @@ impl Connection {
                 let _ = child.kill().await;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{classify_message, MessageKind};
+
+    #[test]
+    fn method_and_id_is_a_server_request() {
+        assert_eq!(
+            classify_message(true, true, Some(1)),
+            MessageKind::ServerRequest
+        );
+    }
+
+    #[test]
+    fn method_only_is_a_notification() {
+        assert_eq!(
+            classify_message(true, false, None),
+            MessageKind::Notification
+        );
+    }
+
+    #[test]
+    fn numeric_id_only_is_a_response_candidate_with_the_parsed_id() {
+        assert_eq!(
+            classify_message(false, true, Some(42)),
+            MessageKind::ResponseCandidate(Some(42))
+        );
+    }
+
+    #[test]
+    fn non_numeric_id_only_is_a_response_candidate_with_no_parsed_id() {
+        // "id" present but not a u64 (e.g. a string id) -- route() falls
+        // through to codex:orphan-response for this case.
+        assert_eq!(
+            classify_message(false, true, None),
+            MessageKind::ResponseCandidate(None)
+        );
+    }
+
+    #[test]
+    fn neither_method_nor_id_is_contamination() {
+        assert_eq!(
+            classify_message(false, false, None),
+            MessageKind::Contamination
+        );
     }
 }

@@ -44,9 +44,11 @@ import {
   journalMarkStarted,
   journalPrepare,
 } from "./journal";
-import { latestInProgressTurnId, sameImageContext, turnIsTerminal, type ImageContext } from "./stateLogic";
+import { latestInProgressTurnId, sameImageContext, type ImageContext } from "./stateLogic";
 import { shouldAbortJournal } from "./rpcFailurePolicy";
 import { CONFIRMED_CODEX_CLI_VERSIONS, isConfirmedCodexCliVersion, parseCodexCliVersion } from "./codexVersion";
+import { decideJournalReconciliation } from "./journalReconciliation";
+import { isApprovalMethod } from "./approvalMethods";
 import "./App.css";
 
 type ConnState = "disconnected" | "connecting" | "connected" | "disconnecting";
@@ -65,18 +67,6 @@ interface WslDistroInfo {
 // the initial default only — still overridable and persisted per N-20/F-02a.
 const DEFAULT_CODEX_PATH = "/home/user/.nvm/versions/node/v22.22.2/bin/codex";
 const DEFAULT_PROJECT_PATH = "/home/user";
-
-// Server-initiated requests we know how to render as an approval card.
-// Anything else surfaces as an explicit "unsupported" banner instead of
-// silently (and confusingly) appearing in the approval modal with blank
-// fields (spec 7.3 is approval-specific; other server request kinds would
-// need their own UI before being routed anywhere).
-const APPROVAL_METHODS = new Set([
-  "item/commandExecution/requestApproval",
-  "item/fileChange/requestApproval",
-  "execCommandApproval",
-  "applyPatchApproval",
-]);
 
 function loadStringList(key: string, fallback: string[]): string[] {
   try {
@@ -695,7 +685,7 @@ export default function App() {
         // Only route known approval-flavored requests into the approval
         // modal; anything else would render as a confusing/blank approval
         // card instead of being visibly unhandled.
-        if (APPROVAL_METHODS.has(req.method)) {
+        if (isApprovalMethod(req.method)) {
           setApprovals((prev) => [...prev, req as ServerRequest]);
         } else {
           setErrorBanner(`未対応のserver request: ${req.method}`);
@@ -831,48 +821,17 @@ export default function App() {
   // F-08c reconciliation: if a journal entry from a previous (possibly
   // crashed) session is still open for this thread, resolve it against the
   // thread's own last turn status instead of guessing. Never resends.
+  // Decision logic lives in journalReconciliation.ts; this just dispatches
+  // the resulting side effects.
   const reconcileJournal = (
     threadId: string,
     turns: Pick<Thread["turns"][number], "id" | "status">[],
   ) => {
     const entry = journalGet(threadId);
     if (!entry) return;
-
-    if (!entry.turnId) {
-      // Never confirmed started server-side (still "prepared"/"sent" when
-      // the app last closed) -- there's no ID to match against, so we
-      // genuinely can't tell whether a turn exists. Leave the entry in
-      // place rather than guessing; surface it so it isn't silently lost.
-      setErrorBanner(
-        `前回のセッションで送信中だった可能性のあるturn（スレッド ${threadId.slice(0, 8)}…）の状態が確認できません。自動再送はしていません。`
-      );
-      return;
-    }
-
-    const targetTurn = turns.find((t) => t.id === entry.turnId);
-    if (!targetTurn) {
-      // Matched by ID but not found in what thread/resume returned (could be
-      // paginated out, or genuinely missing) -- still unresolved, keep it.
-      setErrorBanner(
-        `前回のセッションのturn（${entry.turnId.slice(0, 8)}…）が見つかりません。状態不明のため自動再送はしていません。`
-      );
-      return;
-    }
-
-    if (!turnIsTerminal(targetTurn.status)) {
-      setErrorBanner(
-        `前回のturn（${entry.turnId.slice(0, 8)}…）は現在も実行中です。完了通知を待っています。`
-      );
-      return;
-    }
-
-    // Only now do we have a definitive answer -- safe to clear.
-    journalMarkCompleted(threadId);
-    if (targetTurn.status !== "completed") {
-      setErrorBanner(
-        `前回のセッションで未完了だったturn（${entry.turnId.slice(0, 8)}…）の状態: ${targetTurn.status}。自動再送はしていません。`
-      );
-    }
+    const outcome = decideJournalReconciliation(threadId, entry, turns);
+    if (outcome.clear) journalMarkCompleted(threadId);
+    if (outcome.message) setErrorBanner(outcome.message);
   };
 
   const resumeThread = async (threadId: string) => {
