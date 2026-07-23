@@ -120,6 +120,16 @@ npm run tauri dev
 
 ### 6. 配布用にビルドする場合
 
+このプロジェクトで通常使う直接実行ファイルの再配置は、インストーラーを使わず次のコマンドで行います。
+
+```powershell
+npm exec tauri build -- --no-bundle
+```
+
+生成物は`app/src-tauri/target/release/app.exe`です。必要な作業が終わったら`app.exe`を終了し、必要なときだけ再度起動してください。
+
+インストーラーを作成して別PCへ配布する場合だけ、次を実行します。
+
 ```powershell
 npm run tauri build
 ```
@@ -138,6 +148,7 @@ WebView2）が別途必要**です。アプリ自体はCodexの実行環境を�
 | `npm run build` | フロントエンドの型チェック + 本番ビルド（`dist/`） |
 | `npm test` | フロントエンドから抽出した純粋ロジックのNodeテスト |
 | `npx tsc --noEmit` | フロントエンドの型チェックのみ |
+| `npm exec tauri build -- --no-bundle` | インストーラーを作らず直接実行用のリリース`app.exe`をビルド |
 | `npm run tauri build` | 配布用インストーラのビルド |
 | `cargo build`（`src-tauri/`内） | Rustバックエンドのみビルド |
 | `cargo test`（`src-tauri/`内） | Rustバックエンドのunit test |
