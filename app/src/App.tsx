@@ -1450,6 +1450,19 @@ export default function App() {
   const approvalParams = (approval?.params ?? {}) as CommandApprovalParams;
   const decisions: ApprovalDecision[] =
     approvalParams.availableDecisions ?? ["accept", "decline", "cancel"];
+  // item/fileChange/requestApproval carries no file list of its own (spec
+  // 7.3) -- the params only say *that* a fileChange item needs approval,
+  // not *which files*. The actual list already exists as that item's own
+  // "fileChange" ThreadItem (shown inline in the transcript as "File
+  // changes (inProgress)"); look it up by itemId so the modal doesn't force
+  // the user to go find that item themselves to see what they're approving.
+  const approvalFileChangeItem = approvalParams.itemId
+    ? items.find((di) => di.item.id === approvalParams.itemId)?.item
+    : undefined;
+  const approvalFileChange =
+    approvalFileChangeItem?.type === "fileChange"
+      ? (approvalFileChangeItem as Extract<ThreadItem, { type: "fileChange" }>)
+      : undefined;
 
   return (
     <div className="app">
@@ -1799,6 +1812,16 @@ export default function App() {
             {approvalParams.command && <pre>{approvalParams.command}</pre>}
             {approvalParams.cwd && <p className="cwd">cwd: {approvalParams.cwd}</p>}
             {approvalParams.reason && <p className="reason">{approvalParams.reason}</p>}
+            {approvalFileChange && (
+              <div className="msg filechange approval-filechange">
+                <strong>File changes ({approvalFileChange.status})</strong>
+                <ul>
+                  {approvalFileChange.changes?.map((c, i) => (
+                    <li key={i}>{typeof c.path === "string" ? c.path : JSON.stringify(c)}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
             <div className="decisions">
               {decisions.map((d, i) => (
                 <button
