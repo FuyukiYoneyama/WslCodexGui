@@ -332,3 +332,12 @@ body { background: var(--bg); color: var(--text); }
   margin: 0; padding: 8px 12px; max-height: 160px; overflow: auto;
   font-size: 10px; color: var(--muted);
 }
+
+/* codex-path check status under the connect form */
+.codex-path-status { font-size: 11px; margin: -2px 0 6px; }
+.codex-path-status .checking { color: var(--muted); }
+.codex-path-status .ok { color: #15803d; }
+.codex-path-status .ng { color: var(--danger); }
+@media (prefers-color-scheme: dark) {
+  .codex-path-status .ok { color: #4ade80; }
+}

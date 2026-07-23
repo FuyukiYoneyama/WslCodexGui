@@ -45,6 +45,16 @@ import "./App.css";
 
 type ConnState = "disconnected" | "connecting" | "connected" | "disconnecting";
 
+// Result of the codex-path check for the currently selected distro. The
+// connect button is enabled only in the "ok" state (spec: codexが確認
+// できないときは接続不可).
+type CodexPathStatus = "checking" | "ok" | "ng";
+
+interface WslDistroInfo {
+  name: string;
+  is_default: boolean;
+}
+
 // ENV-01 (spec 4.3): last confirmed-working values on this machine. Used as
 // the initial default only — still overridable and persisted per N-20/F-02a.
 const DEFAULT_CODEX_PATH = "/home/user/.nvm/versions/node/v22.22.2/bin/codex";
@@ -122,9 +132,12 @@ function decisionLabel(d: ApprovalDecision): string {
 
 export default function App() {
   const [distro, setDistro] = useState(() => localStorage.getItem("distro") ?? "Ubuntu-24.04");
+  const [distros, setDistros] = useState<WslDistroInfo[]>([]);
   const [codexPath, setCodexPath] = useState(
     () => localStorage.getItem("codexPath") ?? DEFAULT_CODEX_PATH
   );
+  const [codexStatus, setCodexStatus] = useState<CodexPathStatus>("checking");
+  const [codexNotice, setCodexNotice] = useState<string | null>(null);
   // Provider override, applied only as a -c flag on the spawned app-server
   // process (never written to ~/.codex/config.toml) so the default provider
   // used by every other codex client on this machine is never touched.
@@ -375,6 +388,116 @@ export default function App() {
 
   const [showArchived, setShowArchived] = useState(false);
 
+  // --- codex path resolution (per-distro) ---
+  // Monotonic generation counter: any newer check (distro switch, manual
+  // path edit) invalidates the in-flight result of an older one, so a slow
+  // wsl.exe probe can never overwrite the state of a later check.
+  const codexCheckGenRef = useRef(0);
+  const verifyTimerRef = useRef<number | undefined>(undefined);
+
+  // Resolve the codex path for `d`: verify `candidate` first if given (a
+  // previously saved/typed path), otherwise (or if it no longer exists)
+  // auto-detect inside the distro. Only an "ok" outcome enables connect.
+  const resolveCodexPath = useCallback(async (d: string, candidate: string | null) => {
+    const gen = ++codexCheckGenRef.current;
+    window.clearTimeout(verifyTimerRef.current);
+    setCodexStatus("checking");
+    setCodexNotice(null);
+    try {
+      if (candidate?.trim()) {
+        const ok = await invoke<boolean>("verify_codex_path", { distro: d, path: candidate.trim() });
+        if (gen !== codexCheckGenRef.current) return;
+        if (ok) {
+          setCodexPath(candidate.trim());
+          setCodexStatus("ok");
+          return;
+        }
+      }
+      const found = await invoke<string | null>("detect_codex_path", { distro: d });
+      if (gen !== codexCheckGenRef.current) return;
+      if (found) {
+        setCodexPath(found);
+        setCodexStatus("ok");
+      } else {
+        setCodexPath("");
+        setCodexStatus("ng");
+        setCodexNotice(
+          `${d} 内で codex が見つかりませんでした。WSLターミナルで \`which codex\` を実行し、表示された絶対パスを手入力してください。`
+        );
+      }
+    } catch (e) {
+      if (gen !== codexCheckGenRef.current) return;
+      setCodexStatus("ng");
+      setCodexNotice(`codexパスの確認に失敗しました: ${e}`);
+    }
+  }, []);
+
+  // Startup: enumerate installed WSL distros, preselect the stored one if it
+  // still exists (else the WSL default), then resolve its codex path.
+  useEffect(() => {
+    void (async () => {
+      const storedDistro = localStorage.getItem("distro");
+      const storedPath = localStorage.getItem("codexPath") ?? DEFAULT_CODEX_PATH;
+      try {
+        const list = await invoke<WslDistroInfo[]>("list_wsl_distros");
+        setDistros(list);
+        const chosen =
+          list.find((d) => d.name === storedDistro)?.name ??
+          list.find((d) => d.is_default)?.name ??
+          list[0].name;
+        setDistro(chosen);
+        // The saved codex path only makes sense for the distro it was saved
+        // with; for any other distro start from auto-detection.
+        const candidate = storedDistro === null || storedDistro === chosen ? storedPath : null;
+        void resolveCodexPath(chosen, candidate);
+      } catch (e) {
+        // wsl.exe unavailable or no distros: keep the free-text fallback
+        // input and still try to validate whatever path is stored.
+        setErrorBanner(`WSLディストリ一覧の取得に失敗しました: ${e}`);
+        void resolveCodexPath(storedDistro ?? "Ubuntu-24.04", storedPath);
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const onDistroChange = (name: string) => {
+    setDistro(name);
+    localStorage.setItem("distro", name);
+    void resolveCodexPath(name, null);
+  };
+
+  // Manual codex-path entry: debounce, then verify the file actually exists
+  // (and is executable) inside the selected distro before enabling connect.
+  const onCodexPathInput = (value: string) => {
+    setCodexPath(value);
+    const gen = ++codexCheckGenRef.current;
+    window.clearTimeout(verifyTimerRef.current);
+    setCodexNotice(null);
+    if (!value.trim()) {
+      setCodexStatus("ng");
+      setCodexNotice("codexの絶対パスを入力してください。");
+      return;
+    }
+    setCodexStatus("checking");
+    verifyTimerRef.current = window.setTimeout(() => {
+      void (async () => {
+        try {
+          const ok = await invoke<boolean>("verify_codex_path", {
+            distro: distroRef.current,
+            path: value.trim(),
+          });
+          if (gen !== codexCheckGenRef.current) return;
+          setCodexStatus(ok ? "ok" : "ng");
+          setCodexNotice(ok ? null : "指定されたパスに実行可能な codex が見つかりません。");
+        } catch (e) {
+          if (gen !== codexCheckGenRef.current) return;
+          setCodexStatus("ng");
+          setCodexNotice(`codexパスの確認に失敗しました: ${e}`);
+        }
+      })();
+    }, 500);
+  };
+
   const refreshThreads = useCallback(async () => {
     try {
       const raw = await invoke("rpc_request", {
@@ -566,6 +689,12 @@ export default function App() {
     if (!codexPath.trim()) {
       setErrorBanner(
         "WSL内のcodex実行ファイルの絶対パスを入力してください。WSLターミナルで `which codex` を実行すると確認できます（例: /home/user/.nvm/versions/node/v22.22.2/bin/codex）。灰色の文字は入力例であり、値は未入力です。"
+      );
+      return false;
+    }
+    if (codexStatus !== "ok") {
+      setErrorBanner(
+        codexNotice ?? "codexの場所を確認できていないため接続できません。パスの確認完了をお待ちください。"
       );
       return false;
     }
@@ -1450,16 +1579,46 @@ export default function App() {
               <>
                 <label>
                   WSLディストリ
-                  <input value={distro} onChange={(e) => setDistro(e.target.value)} />
+                  {distros.length > 0 ? (
+                    <select value={distro} onChange={(e) => onDistroChange(e.target.value)}>
+                      {!distros.some((d) => d.name === distro) && (
+                        <option value={distro}>{distro}（未確認）</option>
+                      )}
+                      {distros.map((d) => (
+                        <option key={d.name} value={d.name}>
+                          {d.name}
+                          {d.is_default ? "（既定）" : ""}
+                        </option>
+                      ))}
+                    </select>
+                  ) : (
+                    // Fallback when enumeration failed: free text, re-check
+                    // codex when focus leaves the field.
+                    <input
+                      value={distro}
+                      onChange={(e) => {
+                        setDistro(e.target.value);
+                        localStorage.setItem("distro", e.target.value);
+                      }}
+                      onBlur={() => void resolveCodexPath(distro, codexPath)}
+                    />
+                  )}
                 </label>
                 <label>
                   codex絶対パス（WSL内）
                   <input
                     value={codexPath}
-                    onChange={(e) => setCodexPath(e.target.value)}
+                    onChange={(e) => onCodexPathInput(e.target.value)}
                     placeholder="/home/user/.nvm/.../bin/codex"
                   />
                 </label>
+                <div className="codex-path-status">
+                  {codexStatus === "checking" && <span className="checking">codexの場所を確認中…</span>}
+                  {codexStatus === "ok" && <span className="ok">✓ codexを確認しました</span>}
+                  {codexStatus === "ng" && (
+                    <span className="ng">✗ {codexNotice ?? "codexが見つかりません"}</span>
+                  )}
+                </div>
                 <label>
                   プロバイダ
                   <select value={provider} onChange={(e) => setProvider(e.target.value as "openai" | "ollama")}>
@@ -1506,7 +1665,15 @@ export default function App() {
                     </label>
                   </>
                 )}
-                <button onClick={doConnect} disabled={connState === "connecting"}>
+                <button
+                  onClick={doConnect}
+                  disabled={connState === "connecting" || codexStatus !== "ok"}
+                  title={
+                    codexStatus !== "ok"
+                      ? "codexの場所が確認できるまで接続できません"
+                      : undefined
+                  }
+                >
                   {connState === "connecting" ? "接続中…" : "接続"}
                 </button>
               </>

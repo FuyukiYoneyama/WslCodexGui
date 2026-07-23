@@ -209,6 +209,138 @@ fn open_wsl_terminal(distro: String, path: String) -> Result<(), String> {
 }
 
 #[derive(serde::Serialize)]
+struct WslDistro {
+    name: String,
+    is_default: bool,
+}
+
+/// wsl.exe's management output (`-l -v` etc.) is UTF-16LE by default; output
+/// from commands run *inside* a distro is plain UTF-8. WSL_UTF8=1 forces
+/// management output to UTF-8 on recent WSL builds, but older builds ignore
+/// it, so sniff for the NUL bytes UTF-16LE ASCII text is full of and decode
+/// accordingly instead of trusting either encoding blindly.
+fn decode_wsl_output(bytes: &[u8]) -> String {
+    if bytes.iter().take(64).any(|&b| b == 0) {
+        let units: Vec<u16> = bytes
+            .chunks_exact(2)
+            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+            .collect();
+        String::from_utf16_lossy(&units)
+    } else {
+        String::from_utf8_lossy(bytes).into_owned()
+    }
+}
+
+/// Enumerate installed WSL distributions with the default one marked.
+/// Parses `wsl.exe -l -v` rather than `-l` because the default marker there
+/// is a locale-independent `*` prefix (plain `-l` appends a localized
+/// "(Default)"/"(既定)" suffix that can't be matched reliably).
+#[tauri::command]
+async fn list_wsl_distros() -> Result<Vec<WslDistro>, String> {
+    let mut cmd = tokio::process::Command::new("wsl.exe");
+    cmd.args(["-l", "-v"]).env("WSL_UTF8", "1");
+    #[cfg(windows)]
+    cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    let output = cmd
+        .output()
+        .await
+        .map_err(|e| format!("failed to run wsl.exe: {e}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "wsl.exe -l -v failed: {}",
+            decode_wsl_output(&output.stdout).trim()
+        ));
+    }
+    let text = decode_wsl_output(&output.stdout);
+    let mut distros = Vec::new();
+    // Skip the (localized) header line; rows look like
+    // "* Ubuntu-24.04    Running    2" / "  Debian    Stopped    2".
+    for line in text.lines().skip(1) {
+        let line = line.trim_matches(|c: char| c.is_whitespace() || c == '\u{0}');
+        if line.is_empty() {
+            continue;
+        }
+        let is_default = line.starts_with('*');
+        let rest = line.trim_start_matches('*').trim_start();
+        let Some(name) = rest.split_whitespace().next() else {
+            continue;
+        };
+        distros.push(WslDistro {
+            name: name.to_string(),
+            is_default,
+        });
+    }
+    if distros.is_empty() {
+        return Err("no WSL distributions found".into());
+    }
+    // Default first, rest in wsl.exe's own order.
+    distros.sort_by_key(|d| !d.is_default);
+    Ok(distros)
+}
+
+/// Locate the codex executable inside `distro`. Tries an interactive login
+/// bash first (nvm-installed codex is only on PATH once ~/.bashrc's nvm
+/// block runs, which non-interactive shells skip), then falls back to
+/// globbing the usual install locations directly.
+#[tauri::command]
+async fn detect_codex_path(distro: String) -> Result<Option<String>, String> {
+    validate_distro(&distro)?;
+
+    // Login shells print MOTD banners to stdout before the command output,
+    // and MOTD lines can start with '/' (".hushlogin" hints etc.), so the
+    // real answer is tagged with a marker no banner will ever contain.
+    const MARKER: &str = "__WSLCODEXGUI__";
+
+    async fn run_in_distro(distro: &str, shell_args: &[&str]) -> Option<String> {
+        let mut cmd = tokio::process::Command::new("wsl.exe");
+        cmd.args(["-d", distro, "--"]).args(shell_args);
+        #[cfg(windows)]
+        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+        let output = cmd.output().await.ok()?;
+        String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .filter_map(|l| l.trim().strip_prefix(MARKER))
+            .map(str::trim)
+            // A /mnt/... hit is Windows' own npm shim leaking in through
+            // appendWindowsPath — not a Linux codex, so never auto-pick it
+            // (spawning it via `wsl --exec` doesn't reliably work).
+            .find(|p| p.starts_with('/') && !p.starts_with("/mnt/"))
+            .map(str::to_string)
+    }
+
+    let probe = format!(r#"echo "{MARKER}$(command -v codex)""#);
+    if let Some(path) = run_in_distro(&distro, &["bash", "-lic", &probe]).await {
+        return Ok(Some(path));
+    }
+    let fallback = format!(
+        r#"for p in "$HOME"/.nvm/versions/node/*/bin/codex "$HOME"/.local/bin/codex "$HOME"/.local/share/pnpm/codex "$HOME"/.yarn/bin/codex /usr/local/bin/codex /usr/bin/codex; do if [ -x "$p" ]; then echo "{MARKER}$p"; break; fi; done"#
+    );
+    if let Some(path) = run_in_distro(&distro, &["sh", "-c", &fallback]).await {
+        return Ok(Some(path));
+    }
+    Ok(None)
+}
+
+/// Check that `path` is an executable file inside `distro` (used to validate
+/// a hand-entered codex path before enabling the connect button).
+#[tauri::command]
+async fn verify_codex_path(distro: String, path: String) -> Result<bool, String> {
+    validate_distro(&distro)?;
+    if !path.starts_with('/') || path.contains('\u{0}') {
+        return Ok(false);
+    }
+    let mut cmd = tokio::process::Command::new("wsl.exe");
+    cmd.args(["-d", &distro, "--", "test", "-x", &path]);
+    #[cfg(windows)]
+    cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    let output = cmd
+        .output()
+        .await
+        .map_err(|e| format!("failed to run wsl.exe: {e}"))?;
+    Ok(output.status.success())
+}
+
+#[derive(serde::Serialize)]
 struct OllamaModelInfo {
     name: String,
     context_length: Option<u64>,
@@ -418,7 +550,10 @@ pub fn run() {
             save_pasted_image,
             delete_pasted_image,
             windows_path_to_wsl,
-            list_ollama_models
+            list_ollama_models,
+            list_wsl_distros,
+            detect_codex_path,
+            verify_codex_path
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
