@@ -41,6 +41,7 @@ import {
   journalPrepare,
 } from "./journal";
 import { latestInProgressTurnId, sameImageContext, turnIsTerminal, type ImageContext } from "./stateLogic";
+import { shouldAbortJournal } from "./rpcFailurePolicy";
 import "./App.css";
 
 type ConnState = "disconnected" | "connecting" | "connected" | "disconnecting";
@@ -1349,18 +1350,7 @@ export default function App() {
       });
       journalMarkSent(activeThreadId, requestId);
     } catch (e) {
-      // Allowlist, not a blocklist: only discard the journal entry for the
-      // two kinds where non-delivery is certain. Every other kind --
-      // "response_timeout", "connection_lost", "internal_error", and
-      // whatever new kind a future Rust change might introduce -- is
-      // treated as "fate unknown" by default, so the entry survives for
-      // reconciliation instead of a turn that actually started server-side
-      // getting silently forgotten. An exclusion-based check here would
-      // silently start discarding entries again the moment a new kind
-      // shows up that nobody taught this list about.
-      const kind = rpcErrorKind(e);
-      const certainlyNotDelivered = kind === "write_failed" || kind === "server_rejected";
-      if (certainlyNotDelivered) {
+      if (shouldAbortJournal(rpcErrorKind(e))) {
         journalAbort(activeThreadId, requestId);
         if (imagesAwaitingTurnRef.current === images) {
           imagesAwaitingTurnRef.current = [];
