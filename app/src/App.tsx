@@ -46,6 +46,7 @@ import {
 } from "./journal";
 import { latestInProgressTurnId, sameImageContext, turnIsTerminal, type ImageContext } from "./stateLogic";
 import { shouldAbortJournal } from "./rpcFailurePolicy";
+import { CONFIRMED_CODEX_CLI_VERSIONS, isConfirmedCodexCliVersion, parseCodexCliVersion } from "./codexVersion";
 import "./App.css";
 
 type ConnState = "disconnected" | "connecting" | "connected" | "disconnecting";
@@ -781,6 +782,12 @@ export default function App() {
       connectionIdRef.current = info.connectionId ?? null;
       setInitInfo(info as InitializeResponse);
       setConnState("connected");
+      const codexVersion = parseCodexCliVersion(info.userAgent);
+      if (codexVersion && !isConfirmedCodexCliVersion(codexVersion)) {
+        setErrorBanner(
+          `接続したCodex CLIのバージョン（${codexVersion}）はこのGUIで動作確認済みではありません（確認済み: ${CONFIRMED_CODEX_CLI_VERSIONS.join(", ")}）。接続自体は継続しますが、想定外の挙動が起きる可能性があります。`
+        );
+      }
       await refreshThreads();
       // Rate limits / model catalog are OpenAI-account concepts that don't
       // apply to a local Ollama provider (and model/list is unusable there
