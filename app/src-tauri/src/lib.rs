@@ -282,6 +282,13 @@ async fn list_wsl_distros() -> Result<Vec<WslDistro>, String> {
 /// bash first (nvm-installed codex is only on PATH once ~/.bashrc's nvm
 /// block runs, which non-interactive shells skip), then falls back to
 /// globbing the usual install locations directly.
+fn wsl_exec_args<'a>(distro: &'a str, command_args: &'a [&'a str]) -> Vec<&'a str> {
+    let mut args = Vec::with_capacity(3 + command_args.len());
+    args.extend(["-d", distro, "--exec"]);
+    args.extend_from_slice(command_args);
+    args
+}
+
 #[tauri::command]
 async fn detect_codex_path(distro: String) -> Result<Option<String>, String> {
     validate_distro(&distro)?;
@@ -293,7 +300,7 @@ async fn detect_codex_path(distro: String) -> Result<Option<String>, String> {
 
     async fn run_in_distro(distro: &str, shell_args: &[&str]) -> Option<String> {
         let mut cmd = tokio::process::Command::new("wsl.exe");
-        cmd.args(["-d", distro, "--"]).args(shell_args);
+        cmd.args(wsl_exec_args(distro, shell_args));
         #[cfg(windows)]
         cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
         let output = cmd.output().await.ok()?;
@@ -330,7 +337,8 @@ async fn verify_codex_path(distro: String, path: String) -> Result<bool, String>
         return Ok(false);
     }
     let mut cmd = tokio::process::Command::new("wsl.exe");
-    cmd.args(["-d", &distro, "--", "test", "-x", &path]);
+    let command_args = ["test", "-x", path.as_str()];
+    cmd.args(wsl_exec_args(&distro, &command_args));
     #[cfg(windows)]
     cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
     let output = cmd
@@ -561,7 +569,16 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::{pasted_image_filename, strip_wsl_unc, validate_distro};
+    use super::{pasted_image_filename, strip_wsl_unc, validate_distro, wsl_exec_args};
+
+    #[test]
+    fn wsl_commands_use_exec_argument_boundary() {
+        let command_args = ["sh", "-c", "echo $HOME"];
+        assert_eq!(
+            wsl_exec_args("Ubuntu-24.04", &command_args),
+            ["-d", "Ubuntu-24.04", "--exec", "sh", "-c", "echo $HOME"]
+        );
+    }
 
     #[test]
     fn unc_path_for_selected_distro_is_converted() {
