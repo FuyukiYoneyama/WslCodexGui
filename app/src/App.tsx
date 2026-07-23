@@ -789,7 +789,17 @@ export default function App() {
       return true;
     } catch (e) {
       setConnState("disconnected");
-      setErrorBanner(`接続失敗: ${rpcErrorText(e)}`);
+      setErrorBanner(
+        `接続失敗: ${rpcErrorText(e)}（codexパスを自動で再検出しています…見つかった場合は入力欄が更新されます）`
+      );
+      // The saved codex path may have gone stale since it was last verified
+      // (e.g. nvm reinstalled codex at a new location) -- re-check it right
+      // away instead of leaving the user to retry blindly against a path
+      // that's already dead. resolveCodexPath re-verifies the current path
+      // first and falls back to auto-detection within the distro, updating
+      // codexStatus/codexNotice (and codexPath itself, if a new one is
+      // found) so the connect button's enabled state reflects reality again.
+      void resolveCodexPath(distro, codexPath);
       return false;
     }
   };

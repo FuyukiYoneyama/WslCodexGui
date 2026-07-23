@@ -1,8 +1,8 @@
 [package]
 name = "app"
 version = "0.3.0"
-description = "A Tauri App"
-authors = ["you"]
+description = "WSL2内のCodex CLI（app-server）をWindowsネイティブGUIから操作するためのラッパーアプリ"
+authors = ["Fuyuki Yoneyama"]
 license = "MIT"
 edition = "2021"
 
