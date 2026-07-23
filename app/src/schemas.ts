@@ -48,7 +48,7 @@ export const ThreadSchema = z
   .passthrough();
 
 export const ThreadListResponseSchema = z
-  .object({ data: z.array(ThreadSchema) })
+  .object({ data: z.array(ThreadSchema), nextCursor: z.string().nullable().optional() })
   .passthrough();
 
 export const ThreadStartResponseSchema = z
@@ -77,9 +77,77 @@ export const TurnCompletedNotificationSchema = z
   })
   .passthrough();
 
-const ThreadItemSchema = z
+// Two-tier item validation (spec P1-5): a plain `z.union([...knownSchemas,
+// unknownSchema])` would silently let a *malformed known-type* item (e.g.
+// an agentMessage missing `text`) fall through to the generic unknown-item
+// schema, hiding a real protocol mismatch behind a garbled-but-"valid"
+// render. So known types are looked up by `type` and validated strictly;
+// only a `type` this app has never heard of falls back to the generic
+// id/type-only schema.
+const UserMessageItemSchema = z
+  .object({
+    type: z.literal("userMessage"),
+    id: z.string(),
+    content: z.array(z.object({ type: z.string(), text: z.string().optional() }).passthrough()),
+  })
+  .passthrough();
+
+const AgentMessageItemSchema = z
+  .object({ type: z.literal("agentMessage"), id: z.string(), text: z.string() })
+  .passthrough();
+
+const ReasoningItemSchema = z
+  .object({
+    type: z.literal("reasoning"),
+    id: z.string(),
+    summary: z.array(z.string()),
+    content: z.array(z.string()),
+  })
+  .passthrough();
+
+const CommandExecutionItemSchema = z
+  .object({
+    type: z.literal("commandExecution"),
+    id: z.string(),
+    command: z.string(),
+    cwd: z.string(),
+    status: z.string(),
+    aggregatedOutput: z.string().nullable(),
+    exitCode: z.number().nullable(),
+  })
+  .passthrough();
+
+const FileChangeItemSchema = z
+  .object({
+    type: z.literal("fileChange"),
+    id: z.string(),
+    changes: z.array(z.object({ path: z.string().optional() }).passthrough()),
+    status: z.string(),
+  })
+  .passthrough();
+
+const UnknownThreadItemSchema = z
   .object({ type: z.string(), id: z.string() })
   .passthrough();
+
+const KNOWN_ITEM_SCHEMAS: Record<string, z.ZodType> = {
+  userMessage: UserMessageItemSchema,
+  agentMessage: AgentMessageItemSchema,
+  reasoning: ReasoningItemSchema,
+  commandExecution: CommandExecutionItemSchema,
+  fileChange: FileChangeItemSchema,
+};
+
+const ThreadItemSchema = z.unknown().superRefine((data, ctx) => {
+  const type = (data as { type?: unknown } | null)?.type;
+  const knownSchema = typeof type === "string" ? KNOWN_ITEM_SCHEMAS[type] : undefined;
+  const result = (knownSchema ?? UnknownThreadItemSchema).safeParse(data);
+  if (!result.success) {
+    for (const issue of result.error.issues) {
+      ctx.addIssue({ code: "custom", message: issue.message, path: issue.path });
+    }
+  }
+});
 
 export const ItemNotificationSchema = z
   .object({
@@ -96,6 +164,74 @@ export const AgentMessageDeltaSchema = z
     itemId: z.string(),
     delta: z.string(),
   })
+  .passthrough();
+
+export const ModelSchema = z
+  .object({
+    id: z.string(),
+    model: z.string(),
+    displayName: z.string(),
+    description: z.string(),
+    hidden: z.boolean(),
+    isDefault: z.boolean(),
+  })
+  .passthrough();
+
+export const ModelListResponseSchema = z
+  .object({ data: z.array(ModelSchema) })
+  .passthrough();
+
+const RateLimitWindowSchema = z
+  .object({
+    usedPercent: z.number(),
+    windowDurationMins: z.number().nullable(),
+    resetsAt: z.number().nullable(),
+  })
+  .passthrough();
+
+const RateLimitSnapshotSchema = z
+  .object({
+    limitId: z.string().nullable(),
+    limitName: z.string().nullable(),
+    primary: RateLimitWindowSchema.nullable(),
+    secondary: RateLimitWindowSchema.nullable(),
+    planType: z.string().nullable(),
+  })
+  .passthrough();
+
+export const GetAccountRateLimitsResponseSchema = z
+  .object({
+    rateLimits: RateLimitSnapshotSchema,
+    rateLimitsByLimitId: z.record(z.string(), RateLimitSnapshotSchema).nullable(),
+  })
+  .passthrough();
+
+const TokenUsageBreakdownSchema = z
+  .object({
+    totalTokens: z.number(),
+    inputTokens: z.number(),
+    cachedInputTokens: z.number(),
+    outputTokens: z.number(),
+    reasoningOutputTokens: z.number(),
+  })
+  .passthrough();
+
+export const ThreadTokenUsageUpdatedSchema = z
+  .object({
+    threadId: z.string(),
+    turnId: z.string(),
+    tokenUsage: z
+      .object({
+        total: TokenUsageBreakdownSchema,
+        last: TokenUsageBreakdownSchema,
+        modelContextWindow: z.number().nullable(),
+      })
+      .passthrough(),
+  })
+  .passthrough();
+
+export const GitDiffToRemoteResponseSchema = z
+  .object({ sha: z.string(), diff: z.string() })
   .passthrough();
 
 export const ServerRequestSchema = z

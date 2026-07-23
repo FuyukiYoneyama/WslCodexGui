@@ -341,3 +341,9 @@ body { background: var(--bg); color: var(--text); }
 @media (prefers-color-scheme: dark) {
   .codex-path-status .ok { color: #4ade80; }
 }
+
+/* "load more" button under the thread list (cursor pagination) */
+.threads .load-more { width: 100%; margin: 6px 0 0; padding: 4px; font-size: 11px; }
+
+/* app version label in the footer status bar */
+.statusbar .app-version { color: var(--muted); }

@@ -21,13 +21,17 @@ import type {
 } from "./types";
 import {
   AgentMessageDeltaSchema,
+  GetAccountRateLimitsResponseSchema,
+  GitDiffToRemoteResponseSchema,
   InitializeResponseSchema,
   ItemNotificationSchema,
+  ModelListResponseSchema,
   ServerRequestSchema,
   ThreadListResponseSchema,
   ThreadReadResponseSchema,
   ThreadResumeResponseSchema,
   ThreadStartResponseSchema,
+  ThreadTokenUsageUpdatedSchema,
   TurnCompletedNotificationSchema,
   TurnStartedNotificationSchema,
   parseOrReport,
@@ -170,6 +174,22 @@ export default function App() {
   const [connState, setConnState] = useState<ConnState>("disconnected");
   const [initInfo, setInitInfo] = useState<InitializeResponse | null>(null);
   const [threads, setThreads] = useState<Thread[]>([]);
+  // F-09a: cursor from the most recent page fetched (null once thread/list
+  // has said there's nothing more). Reset to unknown ("has more" assumed)
+  // whenever the visible list is rebuilt from scratch by refreshThreads.
+  const [threadsNextCursor, setThreadsNextCursor] = useState<string | null | undefined>(undefined);
+  const [threadsLoadingMore, setThreadsLoadingMore] = useState(false);
+  const [appVersion, setAppVersion] = useState<string | null>(null);
+  useEffect(() => {
+    void (async () => {
+      try {
+        const { getVersion } = await import("@tauri-apps/api/app");
+        setAppVersion(await getVersion());
+      } catch {
+        // dev server without the Tauri runtime, etc.; footer just omits it
+      }
+    })();
+  }, []);
   const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
   const [activeTurnId, setActiveTurnId] = useState<string | null>(null);
   const [items, setItems] = useState<DisplayItem[]>([]);
@@ -499,6 +519,8 @@ export default function App() {
     }, 500);
   };
 
+  // Full reset: replaces the visible list with page 1 and re-arms the
+  // cursor. Used on connect, archived-view toggle, and the manual ↻ button.
   const refreshThreads = useCallback(async () => {
     try {
       const raw = await invoke("rpc_request", {
@@ -508,10 +530,36 @@ export default function App() {
       const res = parseOrReport(ThreadListResponseSchema, raw, "thread/list", setErrorBanner);
       if (!res) return;
       setThreads(res.data as unknown as Thread[]);
+      setThreadsNextCursor(res.nextCursor ?? null);
     } catch (e) {
       setErrorBanner(`thread/list failed: ${rpcErrorText(e)}`);
     }
   }, [showArchived]);
+
+  // F-09a: fetch the next page and append. Dedupes by id in case a thread
+  // was created/moved between page fetches and ends up straddling pages.
+  const loadMoreThreads = useCallback(async () => {
+    if (!threadsNextCursor || threadsLoadingMore) return;
+    setThreadsLoadingMore(true);
+    try {
+      const raw = await invoke("rpc_request", {
+        method: "thread/list",
+        params: { limit: 30, archived: showArchived, cursor: threadsNextCursor },
+      });
+      const res = parseOrReport(ThreadListResponseSchema, raw, "thread/list", setErrorBanner);
+      if (!res) return;
+      const page = res.data as unknown as Thread[];
+      setThreads((prev) => {
+        const seen = new Set(prev.map((t) => t.id));
+        return [...prev, ...page.filter((t) => !seen.has(t.id))];
+      });
+      setThreadsNextCursor(res.nextCursor ?? null);
+    } catch (e) {
+      setErrorBanner(`thread/list (続き) failed: ${rpcErrorText(e)}`);
+    } finally {
+      setThreadsLoadingMore(false);
+    }
+  }, [showArchived, threadsNextCursor, threadsLoadingMore]);
 
   // refreshThreads is recreated when showArchived changes; re-fetch so
   // toggling the archived view doesn't wait for the next unrelated refresh.
@@ -524,11 +572,13 @@ export default function App() {
   // this runs automatically, not on explicit user action).
   const fetchUsage = useCallback(async () => {
     try {
-      const res = await invoke<GetAccountRateLimitsResponse>("rpc_request", {
+      const raw = await invoke("rpc_request", {
         method: "account/rateLimits/read",
         params: undefined,
       });
-      setUsagePanel(res);
+      const parsed = GetAccountRateLimitsResponseSchema.safeParse(raw);
+      if (parsed.success) setUsagePanel(parsed.data as unknown as GetAccountRateLimitsResponse);
+      // else: silently keep the stale badge, same as any other failure here.
     } catch {
       // connection may be mid-teardown etc.; footer badge just stays stale
     }
@@ -616,7 +666,13 @@ export default function App() {
             break;
           }
           case "thread/tokenUsage/updated": {
-            const p = params as unknown as ThreadTokenUsageUpdated;
+            const p = parseOrReport(
+              ThreadTokenUsageUpdatedSchema,
+              params,
+              "thread/tokenUsage/updated",
+              setErrorBanner
+            ) as unknown as ThreadTokenUsageUpdated | null;
+            if (!p) break;
             setThreadTokenUsage(p.tokenUsage);
             break;
           }
@@ -1043,11 +1099,10 @@ export default function App() {
 
   const openModelPicker = async () => {
     try {
-      const res = await invoke<{ data: Model[] }>("rpc_request", {
-        method: "model/list",
-        params: {},
-      });
-      setModelPicker(res.data.filter((m) => !m.hidden));
+      const raw = await invoke("rpc_request", { method: "model/list", params: {} });
+      const res = parseOrReport(ModelListResponseSchema, raw, "model/list", setErrorBanner);
+      if (!res) return;
+      setModelPicker((res.data as unknown as Model[]).filter((m) => !m.hidden));
     } catch (e) {
       setErrorBanner(`model/list failed: ${rpcErrorText(e)}`);
     }
@@ -1069,8 +1124,11 @@ export default function App() {
   // data for the picker itself).
   const fetchDefaultModel = useCallback(async () => {
     try {
-      const res = await invoke<{ data: Model[] }>("rpc_request", { method: "model/list", params: {} });
-      setDefaultModelLabel(res.data.find((m) => m.isDefault)?.displayName ?? null);
+      const raw = await invoke("rpc_request", { method: "model/list", params: {} });
+      const parsed = ModelListResponseSchema.safeParse(raw);
+      if (parsed.success) {
+        setDefaultModelLabel((parsed.data.data as unknown as Model[]).find((m) => m.isDefault)?.displayName ?? null);
+      }
     } catch {
       // silent — footer just falls back to a generic label
     }
@@ -1089,11 +1147,13 @@ export default function App() {
       return;
     }
     try {
-      const res = await invoke<{ sha: string; diff: string }>("rpc_request", {
+      const raw = await invoke("rpc_request", {
         method: "gitDiffToRemote",
         params: { cwd: projectCwd },
       });
-      setDiffPanel(res);
+      const res = parseOrReport(GitDiffToRemoteResponseSchema, raw, "gitDiffToRemote", setErrorBanner);
+      if (!res) return;
+      setDiffPanel(res as unknown as { sha: string; diff: string });
     } catch (e) {
       setErrorBanner(`gitDiffToRemote failed: ${rpcErrorText(e)}`);
     }
@@ -1557,6 +1617,15 @@ export default function App() {
                 </li>
               ))}
             </ul>
+            {threadsNextCursor && (
+              <button
+                className="mini load-more"
+                onClick={() => void loadMoreThreads()}
+                disabled={connState !== "connected" || threadsLoadingMore}
+              >
+                {threadsLoadingMore ? "読み込み中…" : "さらに読み込む"}
+              </button>
+            )}
           </section>
 
           <section>
@@ -1876,6 +1945,7 @@ export default function App() {
       )}
 
       <footer className="statusbar">
+        {appVersion && <span className="app-version">WslCodexGui v{appVersion}</span>}
         <span className={`dot ${connState}`} />
         <span>
           {connState === "connected"
