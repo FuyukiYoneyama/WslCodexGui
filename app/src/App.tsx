@@ -235,6 +235,14 @@ export default function App() {
   const [usagePanel, setUsagePanel] = useState<GetAccountRateLimitsResponse | null>(null);
   const [usageModalOpen, setUsageModalOpen] = useState(false);
   const [pendingThreadId, setPendingThreadId] = useState<string | null>(null);
+  // window.confirm() does not reliably render in this app's WebView2 host
+  // (observed on a real machine: it silently resolves without ever showing
+  // a dialog) -- use an in-app modal instead, same pattern as pendingThreadId.
+  const [pendingPolicyReopen, setPendingPolicyReopen] = useState<{
+    threadId: string;
+    appliedPolicy: ApprovalPolicy;
+  } | null>(null);
+  const [pendingArchive, setPendingArchive] = useState<Thread | null>(null);
   const [renamingThreadId, setRenamingThreadId] = useState<string | null>(null);
   const [renameInput, setRenameInput] = useState("");
   const [diffPanel, setDiffPanel] = useState<{ sha: string; diff: string } | null>(null);
@@ -931,12 +939,20 @@ export default function App() {
     // prompt since nothing would actually change either way.
     const appliedPolicy = threadApprovalPolicies[threadId];
     if (appliedPolicy !== undefined && appliedPolicy !== approvalPolicy) {
-      const appliedLabel = APPROVAL_POLICIES.find((p) => p.value === appliedPolicy)?.label ?? appliedPolicy;
-      const ok = window.confirm(
-        `このスレッドはこの接続内で既に開かれており、承認レベルは「${appliedLabel}」のまま変更できません（一度切断して再接続すると次回は変更できます）。\n\nこの以前のレベルのまま開きますか？`
-      );
-      if (!ok) return;
+      setPendingPolicyReopen({ threadId, appliedPolicy });
+      return;
     }
+    if (connState !== "connected") {
+      setPendingThreadId(threadId);
+      return;
+    }
+    await resumeThread(threadId);
+  };
+
+  const confirmPolicyReopen = async () => {
+    const threadId = pendingPolicyReopen?.threadId;
+    setPendingPolicyReopen(null);
+    if (!threadId) return;
     if (connState !== "connected") {
       setPendingThreadId(threadId);
       return;
@@ -1669,9 +1685,7 @@ export default function App() {
                             className="rename-btn"
                             onClick={(e) => {
                               e.stopPropagation();
-                              if (window.confirm(`「${t.name ?? t.preview ?? t.id}」をアーカイブしますか？`)) {
-                                void archiveThread(t);
-                              }
+                              setPendingArchive(t);
                             }}
                             title="スレッドをアーカイブ"
                           >
@@ -1935,6 +1949,52 @@ export default function App() {
             <button className="mini" onClick={() => setModelPicker(null)}>
               閉じる
             </button>
+          </div>
+        </div>
+      )}
+
+      {pendingPolicyReopen && (
+        <div className="modal-backdrop" onClick={() => setPendingPolicyReopen(null)}>
+          <div className="modal confirm" onClick={(e) => e.stopPropagation()}>
+            <h3>以前の承認レベルのまま開きますか？</h3>
+            <p>
+              このスレッドはこの接続内で既に開かれており、承認レベルは「
+              {APPROVAL_POLICIES.find((p) => p.value === pendingPolicyReopen.appliedPolicy)?.label ??
+                pendingPolicyReopen.appliedPolicy}
+              」のまま変更できません（一度切断して再接続すると次回は変更できます）。
+            </p>
+            <div className="decisions">
+              <button className="primary" onClick={() => void confirmPolicyReopen()}>
+                はい
+              </button>
+              <button className="danger" onClick={() => setPendingPolicyReopen(null)}>
+                いいえ
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {pendingArchive && (
+        <div className="modal-backdrop" onClick={() => setPendingArchive(null)}>
+          <div className="modal confirm" onClick={(e) => e.stopPropagation()}>
+            <h3>アーカイブしますか？</h3>
+            <p>「{pendingArchive.name ?? pendingArchive.preview ?? pendingArchive.id}」をアーカイブします。</p>
+            <div className="decisions">
+              <button
+                className="primary"
+                onClick={() => {
+                  const t = pendingArchive;
+                  setPendingArchive(null);
+                  if (t) void archiveThread(t);
+                }}
+              >
+                はい
+              </button>
+              <button className="danger" onClick={() => setPendingArchive(null)}>
+                いいえ
+              </button>
+            </div>
           </div>
         </div>
       )}
