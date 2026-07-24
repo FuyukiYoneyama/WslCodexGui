@@ -171,8 +171,12 @@ export default function App() {
   const [projectCwd, setProjectCwd] = useState(
     () => localStorage.getItem("projectCwd") ?? loadStringList("projectPaths", [DEFAULT_PROJECT_PATH])[0]
   );
-  // Applies to threads created from now on (thread/resume keeps whatever
-  // policy the thread already had — this can't change after the fact).
+  // Applies the next time a thread is first loaded by the running
+  // app-server process (new thread, or an existing thread not yet opened
+  // this connection) -- confirmed live that thread/resume's approvalPolicy
+  // override is otherwise ignored once that process already has the thread
+  // loaded. threadApprovalPolicies below tracks which policy each thread
+  // actually ended up loaded with, per connection.
   const [approvalPolicy, setApprovalPolicy] = useState<ApprovalPolicy>(() => {
     const stored = localStorage.getItem("approvalPolicy");
     return APPROVAL_POLICIES.some((p) => p.value === stored) ? (stored as ApprovalPolicy) : "on-request";
@@ -182,6 +186,9 @@ export default function App() {
     setApprovalPolicy(value);
     localStorage.setItem("approvalPolicy", value);
   };
+  // Reset on every (re)connect -- a fresh app-server process means every
+  // thread is "not yet loaded" again, so the lock resets too.
+  const [threadApprovalPolicies, setThreadApprovalPolicies] = useState<Record<string, ApprovalPolicy>>({});
 
   const [connState, setConnState] = useState<ConnState>("disconnected");
   const [initInfo, setInitInfo] = useState<InitializeResponse | null>(null);
@@ -793,6 +800,7 @@ export default function App() {
       connectionIdRef.current = info.connectionId ?? null;
       setInitInfo(info as InitializeResponse);
       setConnState("connected");
+      setThreadApprovalPolicies({});
       const codexVersion = parseCodexCliVersion(info.userAgent);
       if (codexVersion && !isConfirmedCodexCliVersion(codexVersion)) {
         setErrorBanner(
@@ -838,6 +846,7 @@ export default function App() {
       setActiveTurnId(null);
       setItems([]);
       setApprovals([]);
+      setThreadApprovalPolicies({});
       discardPastedImages();
       discardSentImages();
       setUsagePanel(null);
@@ -868,18 +877,22 @@ export default function App() {
   const resumeThread = async (threadId: string) => {
     setErrorBanner(null);
     if (threadId !== activeThreadIdRef.current) discardPastedImages();
+    // approvalPolicy only takes effect the first time this app-server
+    // process loads this particular thread (confirmed by live probe) --
+    // re-opening a thread already loaded this connection silently keeps
+    // whatever policy it loaded with. Once a thread has an entry here,
+    // reuse that entry instead of the current dropdown value so a stale
+    // send can't be mistaken for a real change (openThread already asked
+    // the user before calling this, when the two differ).
+    const effectivePolicy = threadApprovalPolicies[threadId] ?? approvalPolicy;
     try {
-      // approvalPolicy only takes effect the first time this app-server
-      // process loads this particular thread (confirmed by live probe) --
-      // re-opening a thread already touched this session silently keeps
-      // whatever policy it loaded with. A disconnect/reconnect starts a new
-      // process and makes the override apply again on next resume.
       const raw = await invoke("rpc_request", {
         method: "thread/resume",
-        params: { threadId, approvalPolicy },
+        params: { threadId, approvalPolicy: effectivePolicy },
       });
       const res = parseOrReport(ThreadResumeResponseSchema, raw, "thread/resume", setErrorBanner);
       if (!res) return;
+      setThreadApprovalPolicies((prev) => (threadId in prev ? prev : { ...prev, [threadId]: effectivePolicy }));
       const thread = res.thread as unknown as Thread;
       setActiveThreadId(thread.id);
       setActiveTurnId(latestInProgressTurnId(thread.turns));
@@ -912,6 +925,18 @@ export default function App() {
   // Codex-side source of truth, 8.1節); clicking one while not connected
   // asks first instead of failing with "not connected".
   const openThread = async (threadId: string) => {
+    // Only ask when this connection has already loaded this thread under a
+    // *different* level than what's currently selected -- reopening it under
+    // the same level (or a thread never opened this connection) needs no
+    // prompt since nothing would actually change either way.
+    const appliedPolicy = threadApprovalPolicies[threadId];
+    if (appliedPolicy !== undefined && appliedPolicy !== approvalPolicy) {
+      const appliedLabel = APPROVAL_POLICIES.find((p) => p.value === appliedPolicy)?.label ?? appliedPolicy;
+      const ok = window.confirm(
+        `このスレッドはこの接続内で既に開かれており、承認レベルは「${appliedLabel}」のまま変更できません（一度切断して再接続すると次回は変更できます）。\n\nこの以前のレベルのまま開きますか？`
+      );
+      if (!ok) return;
+    }
     if (connState !== "connected") {
       setPendingThreadId(threadId);
       return;
@@ -986,6 +1011,7 @@ export default function App() {
       });
       const res = parseOrReport(ThreadStartResponseSchema, raw, "thread/start", setErrorBanner);
       if (!res) return;
+      setThreadApprovalPolicies((prev) => ({ ...prev, [res.thread.id]: approvalPolicy }));
       discardPastedImages();
       setActiveThreadId(res.thread.id);
       setItems([]);
@@ -1604,8 +1630,16 @@ export default function App() {
                       <button
                         className={t.id === activeThreadId ? "active" : ""}
                         onClick={() => openThread(t.id)}
-                        title={t.cwd}
+                        title={
+                          t.id in threadApprovalPolicies
+                            ? `${t.cwd}\n承認レベル: ${
+                                APPROVAL_POLICIES.find((p) => p.value === threadApprovalPolicies[t.id])?.label ??
+                                threadApprovalPolicies[t.id]
+                              }（この接続内では変更できません）`
+                            : t.cwd
+                        }
                       >
+                        {t.id in threadApprovalPolicies && <span className="policy-lock">🔒</span>}
                         {(t.name ?? t.preview ?? t.id).slice(0, 40) || "(empty)"}
                       </button>
                       {showArchived ? (
