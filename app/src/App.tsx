@@ -869,7 +869,15 @@ export default function App() {
     setErrorBanner(null);
     if (threadId !== activeThreadIdRef.current) discardPastedImages();
     try {
-      const raw = await invoke("rpc_request", { method: "thread/resume", params: { threadId } });
+      // approvalPolicy only takes effect the first time this app-server
+      // process loads this particular thread (confirmed by live probe) --
+      // re-opening a thread already touched this session silently keeps
+      // whatever policy it loaded with. A disconnect/reconnect starts a new
+      // process and makes the override apply again on next resume.
+      const raw = await invoke("rpc_request", {
+        method: "thread/resume",
+        params: { threadId, approvalPolicy },
+      });
       const res = parseOrReport(ThreadResumeResponseSchema, raw, "thread/resume", setErrorBanner);
       if (!res) return;
       const thread = res.thread as unknown as Thread;
@@ -1519,8 +1527,13 @@ export default function App() {
               </div>
             </label>
             <label>
-              承認レベル（新規スレッドから適用）
-              <select value={approvalPolicy} onChange={onApprovalPolicyChange} title="thread/startのapprovalPolicy。作成済みスレッドの分は変更されません">
+              承認レベル
+              <select
+                value={approvalPolicy}
+                onChange={onApprovalPolicyChange}
+                title="新規スレッド作成時と、接続後にこのセッションで初めて開くスレッドに適用されます。一度開いたスレッドを開き直しても変更は反映されません（一度切断して再接続してください）"
+              >
+
                 {APPROVAL_POLICIES.map((p) => (
                   <option key={p.value} value={p.value}>
                     {p.label}
