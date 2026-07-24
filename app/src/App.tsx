@@ -68,6 +68,16 @@ interface WslDistroInfo {
 const DEFAULT_CODEX_PATH = "/home/user/.nvm/versions/node/v22.22.2/bin/codex";
 const DEFAULT_PROJECT_PATH = "/home/user";
 
+// thread/start's approvalPolicy, fixed for the lifetime of a thread (cannot
+// be changed on thread/resume). "granular" also exists server-side but is
+// undocumented in `codex --help` and not exposed here.
+type ApprovalPolicy = "untrusted" | "on-request" | "never";
+const APPROVAL_POLICIES: { value: ApprovalPolicy; label: string }[] = [
+  { value: "untrusted", label: "信頼済みコマンドのみ自動実行（それ以外は確認）" },
+  { value: "on-request", label: "モデルが必要と判断した時だけ確認（既定）" },
+  { value: "never", label: "確認なし（実行失敗はそのままモデルに返る）" },
+];
+
 function loadStringList(key: string, fallback: string[]): string[] {
   try {
     const raw = localStorage.getItem(key);
@@ -161,6 +171,17 @@ export default function App() {
   const [projectCwd, setProjectCwd] = useState(
     () => localStorage.getItem("projectCwd") ?? loadStringList("projectPaths", [DEFAULT_PROJECT_PATH])[0]
   );
+  // Applies to threads created from now on (thread/resume keeps whatever
+  // policy the thread already had — this can't change after the fact).
+  const [approvalPolicy, setApprovalPolicy] = useState<ApprovalPolicy>(() => {
+    const stored = localStorage.getItem("approvalPolicy");
+    return APPROVAL_POLICIES.some((p) => p.value === stored) ? (stored as ApprovalPolicy) : "on-request";
+  });
+  const onApprovalPolicyChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    const value = e.target.value as ApprovalPolicy;
+    setApprovalPolicy(value);
+    localStorage.setItem("approvalPolicy", value);
+  };
 
   const [connState, setConnState] = useState<ConnState>("disconnected");
   const [initInfo, setInitInfo] = useState<InitializeResponse | null>(null);
@@ -953,7 +974,7 @@ export default function App() {
     try {
       const raw = await invoke("rpc_request", {
         method: "thread/start",
-        params: { cwd: projectCwd.trim() },
+        params: { cwd: projectCwd.trim(), approvalPolicy },
       });
       const res = parseOrReport(ThreadStartResponseSchema, raw, "thread/start", setErrorBanner);
       if (!res) return;
@@ -1496,6 +1517,16 @@ export default function App() {
                   📂 参照…
                 </button>
               </div>
+            </label>
+            <label>
+              承認レベル（新規スレッドから適用）
+              <select value={approvalPolicy} onChange={onApprovalPolicyChange} title="thread/startのapprovalPolicy。作成済みスレッドの分は変更されません">
+                {APPROVAL_POLICIES.map((p) => (
+                  <option key={p.value} value={p.value}>
+                    {p.label}
+                  </option>
+                ))}
+              </select>
             </label>
             <div className="project-actions">
               <button onClick={newThread} disabled={connState !== "connected"}>
