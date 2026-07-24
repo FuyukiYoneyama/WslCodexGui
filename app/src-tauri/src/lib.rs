@@ -282,6 +282,16 @@ async fn list_wsl_distros() -> Result<Vec<WslDistro>, String> {
 /// bash first (nvm-installed codex is only on PATH once ~/.bashrc's nvm
 /// block runs, which non-interactive shells skip), then falls back to
 /// globbing the usual install locations directly.
+///
+/// Always invoke via `--exec` (not `--`, see `wsl_exec_args` below):
+/// without it, `wsl.exe` runs its own environment initialization (sourcing
+/// `/etc/profile` etc.) *before* handing off to the requested command, which
+/// then runs its own login-shell initialization again via `bash -lic` --
+/// two initialization passes that can step on each other. Confirmed on a
+/// real machine where codex was unreachable through this detection path
+/// even though the same distro's own interactive terminal (opened directly,
+/// not through this app) could run `codex` fine -- `--exec` skips wsl.exe's
+/// own pass and leaves `bash -lic` as the sole source of truth for PATH.
 fn wsl_exec_args<'a>(distro: &'a str, command_args: &'a [&'a str]) -> Vec<&'a str> {
     let mut args = Vec::with_capacity(3 + command_args.len());
     args.extend(["-d", distro, "--exec"]);
