@@ -246,6 +246,28 @@ export default function App() {
   const [threadTokenUsage, setThreadTokenUsage] = useState<ThreadTokenUsage | null>(null);
   const [usagePanel, setUsagePanel] = useState<GetAccountRateLimitsResponse | null>(null);
   const [usageModalOpen, setUsageModalOpen] = useState(false);
+  // Codex CLI updates often; nagging on every connect until this app's own
+  // allowlist catches up would be worse than useless. Warn once per new
+  // version actually seen, then remember it was acknowledged and never ask
+  // again for that exact version.
+  const [acknowledgedCodexVersions, setAcknowledgedCodexVersions] = useState<string[]>(() => {
+    try {
+      const raw = JSON.parse(localStorage.getItem("acknowledgedCodexVersions") ?? "[]");
+      return Array.isArray(raw) ? raw.filter((v): v is string => typeof v === "string") : [];
+    } catch {
+      return [];
+    }
+  });
+  const [unconfirmedVersionModal, setUnconfirmedVersionModal] = useState<string | null>(null);
+  const dismissVersionWarning = (version: string) => {
+    setUnconfirmedVersionModal(null);
+    setAcknowledgedCodexVersions((prev) => {
+      if (prev.includes(version)) return prev;
+      const next = [...prev, version];
+      localStorage.setItem("acknowledgedCodexVersions", JSON.stringify(next));
+      return next;
+    });
+  };
   const [pendingThreadId, setPendingThreadId] = useState<string | null>(null);
   // window.confirm() does not reliably render in this app's WebView2 host
   // (observed on a real machine: it silently resolves without ever showing
@@ -822,10 +844,12 @@ export default function App() {
       setConnState("connected");
       setThreadApprovalPolicies({});
       const codexVersion = parseCodexCliVersion(info.userAgent);
-      if (codexVersion && !isConfirmedCodexCliVersion(codexVersion)) {
-        setErrorBanner(
-          `接続したCodex CLIのバージョン（${codexVersion}）はこのGUIで動作確認済みではありません（確認済み: ${CONFIRMED_CODEX_CLI_VERSIONS.join(", ")}）。接続自体は継続しますが、想定外の挙動が起きる可能性があります。`
-        );
+      if (
+        codexVersion &&
+        !isConfirmedCodexCliVersion(codexVersion) &&
+        !acknowledgedCodexVersions.includes(codexVersion)
+      ) {
+        setUnconfirmedVersionModal(codexVersion);
       }
       await refreshThreads();
       // Rate limits / model catalog are OpenAI-account concepts that don't
@@ -2024,6 +2048,22 @@ export default function App() {
                 いいえ
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {unconfirmedVersionModal && (
+        <div className="modal-backdrop" onClick={() => dismissVersionWarning(unconfirmedVersionModal)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <h3>新しいCodex CLIバージョンです</h3>
+            <p>
+              接続したCodex CLIのバージョン（{unconfirmedVersionModal}）はこのGUIで動作確認済みではありません（確認済み:{" "}
+              {CONFIRMED_CODEX_CLI_VERSIONS.join(", ")}、および過去にOKした他のバージョン）。接続自体は継続しますが、想定外の挙動が起きる可能性があります。
+            </p>
+            <p className="cwd">このバージョンでは次回以降表示しません。</p>
+            <button className="mini" onClick={() => dismissVersionWarning(unconfirmedVersionModal)}>
+              OK
+            </button>
           </div>
         </div>
       )}
