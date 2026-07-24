@@ -78,6 +78,18 @@ const APPROVAL_POLICIES: { value: ApprovalPolicy; label: string }[] = [
   { value: "never", label: "確認なし（実行失敗はそのままモデルに返る）" },
 ];
 
+// codex's own trust list (~/.codex/config.toml [projects]) decides sandbox
+// per exact cwd path with no inheritance from a trusted parent -- a project
+// folder picked here that isn't separately trusted via the codex CLI (which
+// this GUI has no equivalent flow for) silently defaults to a read-only
+// sandbox, so every write fails and, under approvalPolicy "never", fails
+// *silently* with no chance to escalate. Deliberately choosing a WSL path in
+// this app's project picker is itself the trust decision, so we always send
+// workspace-write here rather than deferring to codex's own trust list --
+// approvalPolicy is unaffected and still governs whether commands need
+// confirmation; this only controls what's technically permitted to execute.
+const PROJECT_SANDBOX = "workspace-write";
+
 function loadStringList(key: string, fallback: string[]): string[] {
   try {
     const raw = localStorage.getItem(key);
@@ -896,7 +908,7 @@ export default function App() {
     try {
       const raw = await invoke("rpc_request", {
         method: "thread/resume",
-        params: { threadId, approvalPolicy: effectivePolicy },
+        params: { threadId, approvalPolicy: effectivePolicy, sandbox: PROJECT_SANDBOX },
       });
       const res = parseOrReport(ThreadResumeResponseSchema, raw, "thread/resume", setErrorBanner);
       if (!res) return;
@@ -1023,7 +1035,7 @@ export default function App() {
     try {
       const raw = await invoke("rpc_request", {
         method: "thread/start",
-        params: { cwd: projectCwd.trim(), approvalPolicy },
+        params: { cwd: projectCwd.trim(), approvalPolicy, sandbox: PROJECT_SANDBOX },
       });
       const res = parseOrReport(ThreadStartResponseSchema, raw, "thread/start", setErrorBanner);
       if (!res) return;
