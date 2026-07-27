@@ -83,6 +83,31 @@ const APPROVAL_POLICIES: { value: ApprovalPolicy; label: string }[] = [
   { value: "never", label: "確認なし（実行失敗はそのままモデルに返る）" },
 ];
 
+// turn/start's `effort`/`serviceTier` (spec: app-server generate-json-schema's
+// TurnStartParams) override "for this turn and subsequent turns" -- unlike
+// approvalPolicy these are NOT fixed for a thread's lifetime, so they can be
+// changed mid-connection and simply take effect on the next message sent.
+// Kept as a fixed list here (not fetched from model/list's per-model
+// supportedReasoningEfforts/serviceTiers) so a value can be picked before
+// connecting too, when there's no live app-server to query yet -- the
+// tradeoff is a model that doesn't support a picked level will surface as an
+// ordinary turn/start error via the existing errorBanner path rather than
+// being filtered out in advance.
+type ReasoningEffort = "low" | "medium" | "high" | "xhigh" | "max";
+const REASONING_EFFORTS: { value: ReasoningEffort; label: string }[] = [
+  { value: "low", label: "軽" },
+  { value: "medium", label: "中程度" },
+  { value: "high", label: "高い" },
+  { value: "xhigh", label: "非常に高い" },
+  { value: "max", label: "最大" },
+];
+
+type ServiceTier = "default" | "priority";
+const SERVICE_TIERS: { value: ServiceTier; label: string }[] = [
+  { value: "default", label: "標準" },
+  { value: "priority", label: "高速（1.5倍速、使用量多め）" },
+];
+
 // codex's own trust list (~/.codex/config.toml [projects]) decides sandbox
 // per exact cwd path with no inheritance from a trusted parent -- a project
 // folder picked here that isn't separately trusted via the codex CLI (which
@@ -268,6 +293,31 @@ export default function App() {
     () => localStorage.getItem("modelOverrideLabel") ?? DEFAULT_MODEL_OVERRIDE_LABEL
   );
   const [defaultModelLabel, setDefaultModelLabel] = useState<string | null>(null);
+  // null means "don't override -- use whatever config.toml/account already
+  // defaults to" (same semantics turn/start gives a missing effort/serviceTier
+  // field). Persisted so a pick sticks across reconnects, same as modelOverride.
+  const [reasoningEffort, setReasoningEffortState] = useState<ReasoningEffort | null>(() => {
+    const stored = localStorage.getItem("reasoningEffort");
+    return REASONING_EFFORTS.some((r) => r.value === stored) ? (stored as ReasoningEffort) : null;
+  });
+  const onReasoningEffortChange = (value: string) => {
+    const next = REASONING_EFFORTS.some((r) => r.value === value) ? (value as ReasoningEffort) : null;
+    setReasoningEffortState(next);
+    if (next) localStorage.setItem("reasoningEffort", next);
+    else localStorage.removeItem("reasoningEffort");
+  };
+  const [serviceTier, setServiceTierState] = useState<ServiceTier | null>(() => {
+    const stored = localStorage.getItem("serviceTier");
+    return SERVICE_TIERS.some((s) => s.value === stored) ? (stored as ServiceTier) : null;
+  });
+  const onServiceTierChange = (value: string) => {
+    const next = SERVICE_TIERS.some((s) => s.value === value) ? (value as ServiceTier) : null;
+    setServiceTierState(next);
+    if (next) localStorage.setItem("serviceTier", next);
+    else localStorage.removeItem("serviceTier");
+  };
+  const [effortPickerOpen, setEffortPickerOpen] = useState(false);
+  const [speedPickerOpen, setSpeedPickerOpen] = useState(false);
   const [threadTokenUsage, setThreadTokenUsage] = useState<ThreadTokenUsage | null>(null);
   const [usagePanel, setUsagePanel] = useState<GetAccountRateLimitsResponse | null>(null);
   const [usageModalOpen, setUsageModalOpen] = useState(false);
@@ -1630,6 +1680,8 @@ export default function App() {
             ...(text ? [{ type: "text", text, text_elements: [] }] : []),
           ],
           ...(modelOverride ? { model: modelOverride } : {}),
+          ...(reasoningEffort ? { effort: reasoningEffort } : {}),
+          ...(serviceTier ? { serviceTier } : {}),
         },
       });
       journalMarkSent(activeThreadId, requestId);
@@ -1959,6 +2011,40 @@ export default function App() {
                     <option value="ollama">Ollama（ローカル）</option>
                   </select>
                 </label>
+                {provider !== "ollama" && (
+                  <>
+                    <label>
+                      推論レベル
+                      <select
+                        value={reasoningEffort ?? ""}
+                        onChange={(e) => onReasoningEffortChange(e.target.value)}
+                        title="turn/startのeffortとして毎ターン送信されます。接続後もフッターのバッジからいつでも変更できます"
+                      >
+                        <option value="">モデルの既定値のまま</option>
+                        {REASONING_EFFORTS.map((r) => (
+                          <option key={r.value} value={r.value}>
+                            {r.label}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label>
+                      速度
+                      <select
+                        value={serviceTier ?? ""}
+                        onChange={(e) => onServiceTierChange(e.target.value)}
+                        title="turn/startのserviceTierとして毎ターン送信されます。接続後もフッターのバッジからいつでも変更できます"
+                      >
+                        <option value="">モデルの既定値のまま</option>
+                        {SERVICE_TIERS.map((s) => (
+                          <option key={s.value} value={s.value}>
+                            {s.label}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  </>
+                )}
                 {provider === "ollama" && (
                   <>
                     <label>
@@ -2153,6 +2239,80 @@ export default function App() {
         </div>
       )}
 
+      {effortPickerOpen && (
+        <div className="modal-backdrop" onClick={() => setEffortPickerOpen(false)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <h3>推論レベルを選択</h3>
+            <ul className="model-list">
+              <li>
+                <button
+                  onClick={() => {
+                    onReasoningEffortChange("");
+                    setEffortPickerOpen(false);
+                  }}
+                >
+                  <strong>モデルの既定値のまま</strong>
+                  {reasoningEffort === null && <span className="tag">選択中</span>}
+                </button>
+              </li>
+              {REASONING_EFFORTS.map((r) => (
+                <li key={r.value}>
+                  <button
+                    onClick={() => {
+                      onReasoningEffortChange(r.value);
+                      setEffortPickerOpen(false);
+                    }}
+                  >
+                    <strong>{r.label}</strong>
+                    {reasoningEffort === r.value && <span className="tag">選択中</span>}
+                  </button>
+                </li>
+              ))}
+            </ul>
+            <button className="mini" onClick={() => setEffortPickerOpen(false)}>
+              閉じる
+            </button>
+          </div>
+        </div>
+      )}
+
+      {speedPickerOpen && (
+        <div className="modal-backdrop" onClick={() => setSpeedPickerOpen(false)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <h3>速度を選択</h3>
+            <ul className="model-list">
+              <li>
+                <button
+                  onClick={() => {
+                    onServiceTierChange("");
+                    setSpeedPickerOpen(false);
+                  }}
+                >
+                  <strong>モデルの既定値のまま</strong>
+                  {serviceTier === null && <span className="tag">選択中</span>}
+                </button>
+              </li>
+              {SERVICE_TIERS.map((s) => (
+                <li key={s.value}>
+                  <button
+                    onClick={() => {
+                      onServiceTierChange(s.value);
+                      setSpeedPickerOpen(false);
+                    }}
+                  >
+                    <strong>{s.label}</strong>
+                    {serviceTier === s.value && <span className="tag">選択中</span>}
+                  </button>
+                </li>
+              ))}
+            </ul>
+            <button className="mini" onClick={() => setSpeedPickerOpen(false)}>
+              閉じる
+            </button>
+          </div>
+        </div>
+      )}
+
       {pendingPolicyReopen && (
         <div className="modal-backdrop" onClick={() => setPendingPolicyReopen(null)}>
           <div className="modal confirm" onClick={(e) => e.stopPropagation()}>
@@ -2328,6 +2488,20 @@ export default function App() {
                 ×
               </button>
             )}
+            <button
+              className="model-footer-badge"
+              onClick={() => setEffortPickerOpen(true)}
+              title="推論レベルを変更（次のメッセージから反映）"
+            >
+              🎚 {REASONING_EFFORTS.find((r) => r.value === reasoningEffort)?.label ?? "既定"}
+            </button>
+            <button
+              className="model-footer-badge"
+              onClick={() => setSpeedPickerOpen(true)}
+              title="速度を変更（次のメッセージから反映）"
+            >
+              🚀 {SERVICE_TIERS.find((s) => s.value === serviceTier)?.label ?? "既定"}
+            </button>
           </span>
         )}
         {provider !== "ollama" && usagePanel && (
