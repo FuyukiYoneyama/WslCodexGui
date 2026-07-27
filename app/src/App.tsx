@@ -261,6 +261,13 @@ export default function App() {
   const [threadApprovalPolicies, setThreadApprovalPolicies] = useState<Record<string, ApprovalPolicy>>({});
 
   const [connState, setConnState] = useState<ConnState>("disconnected");
+  // Deliberately NOT persisted -- every fresh app launch should start on the
+  // minimal connect-only view again, per spec. Flips true the first time a
+  // connect() succeeds and stays true for the rest of this app session, so a
+  // later manual disconnect still shows the full layout (thread list stays
+  // clickable-to-reconnect, per the existing F-09/8.1 behavior) instead of
+  // collapsing back down.
+  const [hasEverConnected, setHasEverConnected] = useState(false);
   const [initInfo, setInitInfo] = useState<InitializeResponse | null>(null);
   const [threads, setThreads] = useState<Thread[]>([]);
   // F-09a: cursor from the most recent page fetched (null once thread/list
@@ -1055,6 +1062,7 @@ export default function App() {
       connectionIdRef.current = info.connectionId ?? null;
       setInitInfo(info as InitializeResponse);
       setConnState("connected");
+      setHasEverConnected(true);
       setThreadApprovalPolicies({});
       // A fresh app-server process may have loaded a config.toml that
       // changed since the last connection -- force the next picker open to
@@ -1840,6 +1848,202 @@ export default function App() {
       ? (approvalFileChangeItem as Extract<ThreadItem, { type: "fileChange" }>)
       : undefined;
 
+  // Shared between the minimal connect-only view (shown until this app
+  // session has connected at least once, see hasEverConnected) and the
+  // normal sidebar's own 接続 section -- same content either way.
+  const connectSection = (
+    <section>
+      <h3>接続</h3>
+      {connState === "connected" || connState === "disconnecting" ? (
+        <button onClick={doDisconnect} disabled={connState === "disconnecting"}>
+          {connState === "disconnecting" ? "切断中…" : "切断"}
+        </button>
+      ) : (
+        <>
+          <label>
+            プロバイダ
+            <select value={provider} onChange={(e) => setProvider(e.target.value as "openai" | "ollama")}>
+              <option value="openai">OpenAI（既定）</option>
+              <option value="ollama">Ollama（ローカル）</option>
+            </select>
+          </label>
+          <label>
+            接続方式
+            <select value={connectionMode} onChange={(e) => onConnectionModeChange(e.target.value as "wsl" | "native")}>
+              <option value="wsl">WSL内のcodex CLI</option>
+              <option value="native">Windows側のcodex CLI</option>
+            </select>
+          </label>
+          {connectionMode === "wsl" && (
+            <label>
+              WSLディストリ
+              {distros.length > 0 ? (
+                <select value={distro} onChange={(e) => onDistroChange(e.target.value)}>
+                  {!distros.some((d) => d.name === distro) && (
+                    <option value={distro}>{distro}（未確認）</option>
+                  )}
+                  {distros.map((d) => (
+                    <option key={d.name} value={d.name}>
+                      {d.name}
+                      {d.is_default ? "（既定）" : ""}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                // Fallback when enumeration failed: free text, re-check
+                // codex when focus leaves the field.
+                <input
+                  value={distro}
+                  onChange={(e) => {
+                    setDistro(e.target.value);
+                    localStorage.setItem("distro", e.target.value);
+                  }}
+                  onBlur={() => void resolveCodexPath(distro, codexPath)}
+                />
+              )}
+            </label>
+          )}
+          <label>
+            {connectionMode === "native" ? "codex絶対パス（Windows）" : "codex絶対パス（WSL内）"}
+            <input
+              value={codexPath}
+              onChange={(e) => onCodexPathInput(e.target.value)}
+              placeholder={
+                connectionMode === "native"
+                  ? String.raw`C:\Users\user\AppData\Roaming\npm\codex.cmd`
+                  : "/home/user/.nvm/.../bin/codex"
+              }
+            />
+          </label>
+          <div className="codex-path-status">
+            {codexStatus === "checking" && <span className="checking">codexの場所を確認中…</span>}
+            {codexStatus === "ok" && <span className="ok">✓ codexを確認しました</span>}
+            {codexStatus === "ng" && <span className="ng">✗ {codexNotice ?? "codexが見つかりません"}</span>}
+          </div>
+          {provider !== "ollama" && (
+            <>
+              <label>
+                モデル
+                {modelCustomEntry ? (
+                  <div className="project-path-row">
+                    <input
+                      value={modelOverride ?? ""}
+                      onChange={(e) => onModelOverrideInput(e.target.value)}
+                      placeholder={DEFAULT_MODEL_OVERRIDE}
+                      title="turn/startのmodelとして毎ターン送信されます"
+                    />
+                    <button type="button" className="mini" onClick={() => setModelCustomEntry(false)} title="一覧から選ぶ">
+                      一覧
+                    </button>
+                  </div>
+                ) : (
+                  <select
+                    value={modelOverride ?? DEFAULT_MODEL_OVERRIDE}
+                    onChange={(e) => {
+                      if (e.target.value === "__custom__") {
+                        setModelCustomEntry(true);
+                        return;
+                      }
+                      onModelOverrideInput(e.target.value);
+                    }}
+                    title="turn/startのmodelとして毎ターン送信されます。接続後はフッターの🧠バッジから一覧を見て選べます（推論レベル・速度の対応状況もそちらで確認できます）"
+                  >
+                    {!MODEL_PRESETS.some((m) => m.value === (modelOverride ?? DEFAULT_MODEL_OVERRIDE)) && (
+                      <option value={modelOverride ?? DEFAULT_MODEL_OVERRIDE}>
+                        {modelOverrideLabel ?? modelOverride}（未確認）
+                      </option>
+                    )}
+                    {MODEL_PRESETS.map((m) => (
+                      <option key={m.value} value={m.value}>
+                        {m.label}
+                      </option>
+                    ))}
+                    <option value="__custom__">その他（IDを直接入力）</option>
+                  </select>
+                )}
+              </label>
+              <label>
+                推論レベル
+                <select
+                  value={reasoningEffort ?? ""}
+                  onChange={(e) => onReasoningEffortChange(e.target.value)}
+                  title="turn/startのeffortとして毎ターン送信されます。接続後もフッターのバッジからいつでも変更できます"
+                >
+                  <option value="">指定なし（サーバー側の設定に従う）</option>
+                  {REASONING_EFFORTS.map((r) => (
+                    <option key={r.value} value={r.value}>
+                      {r.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                速度
+                <select
+                  value={serviceTier ?? ""}
+                  onChange={(e) => onServiceTierChange(e.target.value)}
+                  title="turn/startのserviceTierとして毎ターン送信されます。接続後もフッターのバッジからいつでも変更できます"
+                >
+                  <option value="">指定なし（サーバー側の設定に従う）</option>
+                  {SERVICE_TIERS.map((s) => (
+                    <option key={s.value} value={s.value}>
+                      {s.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </>
+          )}
+          {provider === "ollama" && (
+            <>
+              <label>
+                Ollamaモデル
+                <div className="project-path-row">
+                  <select value={ollamaModel} onChange={(e) => onOllamaModelChange(e.target.value)}>
+                    {ollamaModels.length === 0 && <option value={ollamaModel}>{ollamaModel}</option>}
+                    {ollamaModels.length > 0 && !ollamaModels.some((m) => m.name === ollamaModel) && (
+                      <option value={ollamaModel}>{ollamaModel}（未確認）</option>
+                    )}
+                    {ollamaModels.map((m) => (
+                      <option key={m.name} value={m.name}>
+                        {m.name}
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    type="button"
+                    className="mini"
+                    onClick={() => void refreshOllamaModels()}
+                    disabled={ollamaModelsLoading}
+                    title="Ollamaに問い合わせてインストール済みモデル一覧を再取得"
+                  >
+                    {ollamaModelsLoading ? "…" : "↻"}
+                  </button>
+                </div>
+              </label>
+              <label>
+                コンテキスト長
+                <input
+                  value={ollamaContextWindow}
+                  onChange={(e) => setOllamaContextWindow(e.target.value)}
+                  placeholder="32768"
+                  title="モデル選択時にOllamaの実測値を自動反映（手動で上書き可）"
+                />
+              </label>
+            </>
+          )}
+          <button
+            onClick={doConnect}
+            disabled={connState === "connecting" || codexStatus !== "ok"}
+            title={codexStatus !== "ok" ? "codexの場所が確認できるまで接続できません" : undefined}
+          >
+            {connState === "connecting" ? "接続中…" : "接続"}
+          </button>
+        </>
+      )}
+    </section>
+  );
+
   return (
     <div className="app">
 
@@ -1851,6 +2055,10 @@ export default function App() {
 
       <div className="body">
         <aside className="sidebar">
+          {!hasEverConnected ? (
+            connectSection
+          ) : (
+            <>
           <section>
             <h3>プロジェクト</h3>
             <label>
@@ -2014,213 +2222,12 @@ export default function App() {
             )}
           </section>
 
-          <section>
-            <h3>接続</h3>
-            {connState === "connected" || connState === "disconnecting" ? (
-              <button onClick={doDisconnect} disabled={connState === "disconnecting"}>
-                {connState === "disconnecting" ? "切断中…" : "切断"}
-              </button>
-            ) : (
-              <>
-                <label>
-                  プロバイダ
-                  <select value={provider} onChange={(e) => setProvider(e.target.value as "openai" | "ollama")}>
-                    <option value="openai">OpenAI（既定）</option>
-                    <option value="ollama">Ollama（ローカル）</option>
-                  </select>
-                </label>
-                <label>
-                  接続方式
-                  <select
-                    value={connectionMode}
-                    onChange={(e) => onConnectionModeChange(e.target.value as "wsl" | "native")}
-                  >
-                    <option value="wsl">WSL内のcodex CLI</option>
-                    <option value="native">Windows側のcodex CLI</option>
-                  </select>
-                </label>
-                {connectionMode === "wsl" && (
-                  <label>
-                    WSLディストリ
-                    {distros.length > 0 ? (
-                      <select value={distro} onChange={(e) => onDistroChange(e.target.value)}>
-                        {!distros.some((d) => d.name === distro) && (
-                          <option value={distro}>{distro}（未確認）</option>
-                        )}
-                        {distros.map((d) => (
-                          <option key={d.name} value={d.name}>
-                            {d.name}
-                            {d.is_default ? "（既定）" : ""}
-                          </option>
-                        ))}
-                      </select>
-                    ) : (
-                      // Fallback when enumeration failed: free text, re-check
-                      // codex when focus leaves the field.
-                      <input
-                        value={distro}
-                        onChange={(e) => {
-                          setDistro(e.target.value);
-                          localStorage.setItem("distro", e.target.value);
-                        }}
-                        onBlur={() => void resolveCodexPath(distro, codexPath)}
-                      />
-                    )}
-                  </label>
-                )}
-                <label>
-                  {connectionMode === "native" ? "codex絶対パス（Windows）" : "codex絶対パス（WSL内）"}
-                  <input
-                    value={codexPath}
-                    onChange={(e) => onCodexPathInput(e.target.value)}
-                    placeholder={
-                      connectionMode === "native"
-                        ? String.raw`C:\Users\user\AppData\Roaming\npm\codex.cmd`
-                        : "/home/user/.nvm/.../bin/codex"
-                    }
-                  />
-                </label>
-                <div className="codex-path-status">
-                  {codexStatus === "checking" && <span className="checking">codexの場所を確認中…</span>}
-                  {codexStatus === "ok" && <span className="ok">✓ codexを確認しました</span>}
-                  {codexStatus === "ng" && (
-                    <span className="ng">✗ {codexNotice ?? "codexが見つかりません"}</span>
-                  )}
-                </div>
-                {provider !== "ollama" && (
-                  <>
-                    <label>
-                      モデル
-                      {modelCustomEntry ? (
-                        <div className="project-path-row">
-                          <input
-                            value={modelOverride ?? ""}
-                            onChange={(e) => onModelOverrideInput(e.target.value)}
-                            placeholder={DEFAULT_MODEL_OVERRIDE}
-                            title="turn/startのmodelとして毎ターン送信されます"
-                          />
-                          <button
-                            type="button"
-                            className="mini"
-                            onClick={() => setModelCustomEntry(false)}
-                            title="一覧から選ぶ"
-                          >
-                            一覧
-                          </button>
-                        </div>
-                      ) : (
-                        <select
-                          value={modelOverride ?? DEFAULT_MODEL_OVERRIDE}
-                          onChange={(e) => {
-                            if (e.target.value === "__custom__") {
-                              setModelCustomEntry(true);
-                              return;
-                            }
-                            onModelOverrideInput(e.target.value);
-                          }}
-                          title="turn/startのmodelとして毎ターン送信されます。接続後はフッターの🧠バッジから一覧を見て選べます（推論レベル・速度の対応状況もそちらで確認できます）"
-                        >
-                          {!MODEL_PRESETS.some((m) => m.value === (modelOverride ?? DEFAULT_MODEL_OVERRIDE)) && (
-                            <option value={modelOverride ?? DEFAULT_MODEL_OVERRIDE}>
-                              {modelOverrideLabel ?? modelOverride}（未確認）
-                            </option>
-                          )}
-                          {MODEL_PRESETS.map((m) => (
-                            <option key={m.value} value={m.value}>
-                              {m.label}
-                            </option>
-                          ))}
-                          <option value="__custom__">その他（IDを直接入力）</option>
-                        </select>
-                      )}
-                    </label>
-                    <label>
-                      推論レベル
-                      <select
-                        value={reasoningEffort ?? ""}
-                        onChange={(e) => onReasoningEffortChange(e.target.value)}
-                        title="turn/startのeffortとして毎ターン送信されます。接続後もフッターのバッジからいつでも変更できます"
-                      >
-                        <option value="">指定なし（サーバー側の設定に従う）</option>
-                        {REASONING_EFFORTS.map((r) => (
-                          <option key={r.value} value={r.value}>
-                            {r.label}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                    <label>
-                      速度
-                      <select
-                        value={serviceTier ?? ""}
-                        onChange={(e) => onServiceTierChange(e.target.value)}
-                        title="turn/startのserviceTierとして毎ターン送信されます。接続後もフッターのバッジからいつでも変更できます"
-                      >
-                        <option value="">指定なし（サーバー側の設定に従う）</option>
-                        {SERVICE_TIERS.map((s) => (
-                          <option key={s.value} value={s.value}>
-                            {s.label}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                  </>
-                )}
-                {provider === "ollama" && (
-                  <>
-                    <label>
-                      Ollamaモデル
-                      <div className="project-path-row">
-                        <select value={ollamaModel} onChange={(e) => onOllamaModelChange(e.target.value)}>
-                          {ollamaModels.length === 0 && <option value={ollamaModel}>{ollamaModel}</option>}
-                          {ollamaModels.length > 0 &&
-                            !ollamaModels.some((m) => m.name === ollamaModel) && (
-                              <option value={ollamaModel}>{ollamaModel}（未確認）</option>
-                            )}
-                          {ollamaModels.map((m) => (
-                            <option key={m.name} value={m.name}>
-                              {m.name}
-                            </option>
-                          ))}
-                        </select>
-                        <button
-                          type="button"
-                          className="mini"
-                          onClick={() => void refreshOllamaModels()}
-                          disabled={ollamaModelsLoading}
-                          title="Ollamaに問い合わせてインストール済みモデル一覧を再取得"
-                        >
-                          {ollamaModelsLoading ? "…" : "↻"}
-                        </button>
-                      </div>
-                    </label>
-                    <label>
-                      コンテキスト長
-                      <input
-                        value={ollamaContextWindow}
-                        onChange={(e) => setOllamaContextWindow(e.target.value)}
-                        placeholder="32768"
-                        title="モデル選択時にOllamaの実測値を自動反映（手動で上書き可）"
-                      />
-                    </label>
-                  </>
-                )}
-                <button
-                  onClick={doConnect}
-                  disabled={connState === "connecting" || codexStatus !== "ok"}
-                  title={
-                    codexStatus !== "ok"
-                      ? "codexの場所が確認できるまで接続できません"
-                      : undefined
-                  }
-                >
-                  {connState === "connecting" ? "接続中…" : "接続"}
-                </button>
-              </>
-            )}
-          </section>
+          {connectSection}
+            </>
+          )}
         </aside>
 
+        {hasEverConnected && (
         <main className="chat">
           <div className={`transcript${activeTurnId ? " turn-active" : ""}`} ref={transcriptRef}>
             {items.map((di) => (
@@ -2301,6 +2308,7 @@ export default function App() {
             </div>
           </div>
         </main>
+        )}
       </div>
 
       {approval && (
