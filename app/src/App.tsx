@@ -67,6 +67,11 @@ interface WslDistroInfo {
 // the initial default only — still overridable and persisted per N-20/F-02a.
 const DEFAULT_CODEX_PATH = "/home/user/.nvm/versions/node/v22.22.2/bin/codex";
 const DEFAULT_PROJECT_PATH = "/home/user";
+// Sticks on every connect until the user picks something else via the 🧠
+// footer badge (openModelPicker/pickModel) — only applies to the OpenAI
+// provider; Ollama has its own separate model field.
+const DEFAULT_MODEL_OVERRIDE = "gpt-5.6-luna";
+const DEFAULT_MODEL_OVERRIDE_LABEL = "GPT-5.6-Luna";
 
 // thread/start's approvalPolicy, fixed for the lifetime of a thread (cannot
 // be changed on thread/resume). "granular" also exists server-side but is
@@ -240,8 +245,12 @@ export default function App() {
   const [slashOpen, setSlashOpen] = useState(false);
   const [slashIndex, setSlashIndex] = useState(0);
   const [modelPicker, setModelPicker] = useState<Model[] | null>(null);
-  const [modelOverride, setModelOverride] = useState<string | null>(null);
-  const [modelOverrideLabel, setModelOverrideLabel] = useState<string | null>(null);
+  const [modelOverride, setModelOverride] = useState<string | null>(
+    () => localStorage.getItem("modelOverride") ?? DEFAULT_MODEL_OVERRIDE
+  );
+  const [modelOverrideLabel, setModelOverrideLabel] = useState<string | null>(
+    () => localStorage.getItem("modelOverrideLabel") ?? DEFAULT_MODEL_OVERRIDE_LABEL
+  );
   const [defaultModelLabel, setDefaultModelLabel] = useState<string | null>(null);
   const [threadTokenUsage, setThreadTokenUsage] = useState<ThreadTokenUsage | null>(null);
   const [usagePanel, setUsagePanel] = useState<GetAccountRateLimitsResponse | null>(null);
@@ -1194,12 +1203,16 @@ export default function App() {
   const pickModel = (m: Model) => {
     setModelOverride(m.model);
     setModelOverrideLabel(m.displayName);
+    localStorage.setItem("modelOverride", m.model);
+    localStorage.setItem("modelOverrideLabel", m.displayName);
     setModelPicker(null);
   };
 
   const clearModelOverride = () => {
     setModelOverride(null);
     setModelOverrideLabel(null);
+    localStorage.removeItem("modelOverride");
+    localStorage.removeItem("modelOverrideLabel");
   };
 
   // Silent lookup of the account's default model, purely for the footer
@@ -1858,7 +1871,7 @@ export default function App() {
         </aside>
 
         <main className="chat">
-          <div className="transcript" ref={transcriptRef}>
+          <div className={`transcript${activeTurnId ? " turn-active" : ""}`} ref={transcriptRef}>
             {items.map((di) => (
               <TranscriptItem key={di.key} di={di} distro={distro} cwd={projectCwd} onLinkError={setErrorBanner} />
             ))}

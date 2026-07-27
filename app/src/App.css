@@ -11,6 +11,7 @@
   --danger: #dc2626;
   --user-bubble: #dbeafe;
   --agent-bubble: #ffffff;
+  --working-bg: #eaf1ff;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -22,6 +23,7 @@
     --muted: #9a9aa5;
     --user-bubble: #1e3a5f;
     --agent-bubble: #2a2a31;
+    --working-bg: #16233d;
   }
 }
 
@@ -137,6 +139,9 @@ body { background: var(--bg); color: var(--text); }
 /* --- chat --- */
 .chat { flex: 1 1 auto; display: flex; flex-direction: column; min-width: 0; }
 .transcript { flex: 1 1 auto; overflow-y: auto; padding: 16px; }
+/* Only while a turn is actually running (activeTurnId) -- reverts to the
+   plain background the instant it completes, so idle threads look normal. */
+.transcript.turn-active { background: var(--working-bg); }
 .msg {
   max-width: 780px; margin: 0 auto 10px;
   padding: 9px 13px; border-radius: 8px;
