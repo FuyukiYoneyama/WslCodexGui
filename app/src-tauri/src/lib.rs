@@ -92,9 +92,15 @@ async fn connect(
         old.shutdown().await;
     }
 
-    let conn = Connection::spawn(app, &connection_mode, &distro, &codex_path, &config_overrides)
-        .await
-        .map_err(RpcFailure::from)?;
+    let conn = Connection::spawn(
+        app,
+        &connection_mode,
+        &distro,
+        &codex_path,
+        &config_overrides,
+    )
+    .await
+    .map_err(RpcFailure::from)?;
 
     // initialize -> initialized handshake (spec 5.2; mandatory before any
     // other method).
@@ -807,10 +813,9 @@ mod tests {
             .to_string_lossy()
             .into_owned();
         assert!(pasted_image_filename_native(&unrelated).is_err());
-        assert!(pasted_image_filename_native(
-            r"C:\Users\someone\wslcodexgui-paste-1234.png"
-        )
-        .is_err());
+        assert!(
+            pasted_image_filename_native(r"C:\Users\someone\wslcodexgui-paste-1234.png").is_err()
+        );
         let bad_uuid = std::env::temp_dir()
             .join("wslcodexgui-paste-not-a-uuid.png")
             .to_string_lossy()
