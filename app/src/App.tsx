@@ -1434,6 +1434,25 @@ export default function App() {
     localStorage.removeItem("modelOverrideLabel");
   };
 
+  // Pre-connect model entry: model/list needs a live app-server connection,
+  // so there's no picker here -- just a free-text model id (same value
+  // turn/start's `model` field takes), mirroring codexPath's own text-input
+  // pattern. The display label is only ever properly resolved by the
+  // post-connect 🧠 picker (which does have model/list's displayName), so
+  // until then the raw id doubles as its own label.
+  const onModelOverrideInput = (value: string) => {
+    const trimmed = value.trim();
+    setModelOverride(trimmed || null);
+    setModelOverrideLabel(trimmed || null);
+    if (trimmed) {
+      localStorage.setItem("modelOverride", trimmed);
+      localStorage.setItem("modelOverrideLabel", trimmed);
+    } else {
+      localStorage.removeItem("modelOverride");
+      localStorage.removeItem("modelOverrideLabel");
+    }
+  };
+
   // Silent lookup of the account's default model, purely for the footer
   // label when no override is set (openModelPicker still re-fetches fresh
   // data for the picker itself).
@@ -1989,6 +2008,13 @@ export default function App() {
             ) : (
               <>
                 <label>
+                  プロバイダ
+                  <select value={provider} onChange={(e) => setProvider(e.target.value as "openai" | "ollama")}>
+                    <option value="openai">OpenAI（既定）</option>
+                    <option value="ollama">Ollama（ローカル）</option>
+                  </select>
+                </label>
+                <label>
                   接続方式
                   <select
                     value={connectionMode}
@@ -2046,15 +2072,17 @@ export default function App() {
                     <span className="ng">✗ {codexNotice ?? "codexが見つかりません"}</span>
                   )}
                 </div>
-                <label>
-                  プロバイダ
-                  <select value={provider} onChange={(e) => setProvider(e.target.value as "openai" | "ollama")}>
-                    <option value="openai">OpenAI（既定）</option>
-                    <option value="ollama">Ollama（ローカル）</option>
-                  </select>
-                </label>
                 {provider !== "ollama" && (
                   <>
+                    <label>
+                      モデル
+                      <input
+                        value={modelOverride ?? ""}
+                        onChange={(e) => onModelOverrideInput(e.target.value)}
+                        placeholder={DEFAULT_MODEL_OVERRIDE}
+                        title="turn/startのmodelとして毎ターン送信されます。接続後はフッターの🧠バッジから一覧を見て選べます（推論レベル・速度の対応状況もそちらで確認できます）"
+                      />
+                    </label>
                     <label>
                       推論レベル
                       <select
