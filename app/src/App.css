@@ -189,10 +189,13 @@ body { background: var(--bg); color: var(--text); }
 .msg.md th, .msg.md td { border: 1px solid var(--border); padding: 4px 8px; }
 .msg.md th { background: var(--bg); }
 .working {
-  max-width: 780px; margin: 0 auto; color: var(--muted);
-  font-size: 12px; animation: pulse 1.2s infinite;
+  max-width: 780px; margin: 0 auto 10px;
+  padding: 9px 13px; border-radius: 8px;
+  background: var(--accent); color: #fff;
+  font-size: 13px; font-weight: 600;
+  animation: pulse 1.2s infinite;
 }
-@keyframes pulse { 50% { opacity: 0.4; } }
+@keyframes pulse { 50% { opacity: 0.55; } }
 
 .composer-wrap { position: relative; flex: 0 0 auto; }
 .composer-wrap.drag-over .composer {
