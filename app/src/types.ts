@@ -153,12 +153,19 @@ export interface RateLimitWindow {
   resetsAt: number | null;
 }
 
+export interface AccountCredits {
+  hasCredits: boolean;
+  unlimited: boolean;
+  balance: string | null;
+}
+
 export interface RateLimitSnapshot {
   limitId: string | null;
   limitName: string | null;
   primary: RateLimitWindow | null;
   secondary: RateLimitWindow | null;
   planType: string | null;
+  credits?: AccountCredits | null;
 }
 
 export interface GetAccountRateLimitsResponse {

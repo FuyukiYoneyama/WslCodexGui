@@ -67,6 +67,11 @@ body { background: var(--bg); color: var(--text); }
 }
 .usage-pill.warn { color: #b45309; border-color: #eab308; }
 .usage-pill.danger { color: #fff; background: var(--danger); border-color: var(--danger); }
+.usage-pill.credit { color: #fff; background: #7c3aed; border-color: #7c3aed; font-weight: 600; }
+.credit-banner {
+  margin: 8px 0 0; padding: 8px 10px; border-radius: 6px;
+  background: #7c3aed; color: #fff; font-size: 12px; font-weight: 600;
+}
 
 .banner {
   background: #fef2f2; color: #991b1b;

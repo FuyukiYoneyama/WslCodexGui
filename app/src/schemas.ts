@@ -189,6 +189,14 @@ const RateLimitWindowSchema = z
   })
   .passthrough();
 
+const AccountCreditsSchema = z
+  .object({
+    hasCredits: z.boolean(),
+    unlimited: z.boolean(),
+    balance: z.string().nullable(),
+  })
+  .passthrough();
+
 const RateLimitSnapshotSchema = z
   .object({
     limitId: z.string().nullable(),
@@ -196,6 +204,7 @@ const RateLimitSnapshotSchema = z
     primary: RateLimitWindowSchema.nullable(),
     secondary: RateLimitWindowSchema.nullable(),
     planType: z.string().nullable(),
+    credits: AccountCreditsSchema.nullable().optional(),
   })
   .passthrough();
 

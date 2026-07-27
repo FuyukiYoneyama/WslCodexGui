@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import ReactMarkdown from "react-markdown";
@@ -2087,6 +2087,7 @@ export default function App() {
             <h3>使用量</h3>
             <UsageWindow label="Primary" w={usagePanel.rateLimits.primary} />
             <UsageWindow label="Secondary" w={usagePanel.rateLimits.secondary} />
+            <CreditBanner rateLimits={usagePanel.rateLimits} />
             {threadTokenUsage && (
               <>
                 <p className="usage-subhead">現在のスレッド</p>
@@ -2184,6 +2185,7 @@ export default function App() {
             {usagePanel.rateLimits.secondary && (
               <UsagePill label="S" pct={usagePanel.rateLimits.secondary?.usedPercent} />
             )}
+            <CreditPill rateLimits={usagePanel.rateLimits} />
           </button>
         )}
         {activeTurnId && (
@@ -2217,6 +2219,39 @@ function UsagePill({ label, pct }: { label: string; pct: number | undefined }) {
     <span className={`usage-pill ${cls}`}>
       {label} 残{remaining}%
     </span>
+  );
+}
+
+// True once a rate-limit window is fully used and Codex would fall back to
+// drawing on purchased credits for further requests (the account has a
+// balance and isn't on an unlimited plan).
+function isDrawingOnCredits(rateLimits: import("./types").RateLimitSnapshot): boolean {
+  const credits = rateLimits.credits;
+  if (!credits?.hasCredits || credits.unlimited) return false;
+  const primaryExhausted = (rateLimits.primary?.usedPercent ?? 0) >= 100;
+  const secondaryExhausted = (rateLimits.secondary?.usedPercent ?? 0) >= 100;
+  return primaryExhausted || secondaryExhausted;
+}
+
+function formatCreditBalance(balance: string | null): string {
+  const n = balance === null ? NaN : Number(balance);
+  return Number.isFinite(n) ? n.toFixed(2) : (balance ?? "?");
+}
+
+// Compact footer version of the same signal as CreditBanner below --
+// distinct "credit" color (not the usual warn/danger amber-red) since
+// "now spending real money" is a different kind of alert than "quota low".
+function CreditPill({ rateLimits }: { rateLimits: import("./types").RateLimitSnapshot }) {
+  if (!isDrawingOnCredits(rateLimits)) return null;
+  return <span className="usage-pill credit">💳 残{formatCreditBalance(rateLimits.credits?.balance ?? null)}</span>;
+}
+
+function CreditBanner({ rateLimits }: { rateLimits: import("./types").RateLimitSnapshot }) {
+  if (!isDrawingOnCredits(rateLimits)) return null;
+  return (
+    <div className="credit-banner">
+      💳 プラン枠を使い切り、購入クレジットから消費中です。残クレジット: {formatCreditBalance(rateLimits.credits?.balance ?? null)}
+    </div>
   );
 }
 
@@ -2337,7 +2372,12 @@ function markdownLinkComponents(distro: string, cwd: string, onLinkError: (msg: 
   };
 }
 
-function TranscriptItem({
+// Memoized: without this, every keystroke in the composer re-renders the
+// entire App component, which re-renders every already-settled message
+// (each running its own Markdown parse) even though nothing about them
+// changed -- the dominant cause of visible IME input lag once a thread has
+// more than a few messages.
+const TranscriptItem = memo(function TranscriptItem({
   di,
   distro,
   cwd,
@@ -2406,4 +2446,4 @@ function TranscriptItem({
     default:
       return null; // unknown item kinds are silently skipped (N-10)
   }
-}
+});
