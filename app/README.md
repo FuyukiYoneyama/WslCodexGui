@@ -1,9 +1,14 @@
 # WSL Codex GUI
 
-WSL2内で動く [Codex CLI](https://github.com/openai/codex) の `app-server` を、Windowsネイティブの
-GUI（Tauri 2 + React）から操作するためのラッパーアプリです。Codexの実行環境（設定・認証・ツールチェーン・
-プロジェクトファイル）はすべてWSL側に置き、Windows側は表示と入力に専念します。ネットワークポートは一切
-使いません（`wsl.exe`の子プロセスを標準入出力パイプで直結する方式）。
+[Codex CLI](https://github.com/openai/codex) の `app-server` を、Windowsネイティブの
+GUI（Tauri 2 + React）から操作するためのラッパーアプリです。接続方式は2種類選べます。
+
+- **WSLモード**（既定）: Codexの実行環境（設定・認証・ツールチェーン・プロジェクトファイル）をすべてWSL側に
+  置き、Windows側は表示と入力に専念します。`wsl.exe`の子プロセスを標準入出力パイプで直結する方式です。
+- **Windows-nativeモード**: Windows側に直接インストールしたCodex CLI（`@openai/codex`が公式配布している
+  `codex-win32-x64`等）を、`wsl.exe`を介さず直接子プロセスとして起動します。
+
+どちらの方式でもネットワークポートは一切使いません（子プロセスの標準入出力パイプで直結する方式）。
 
 設計の背景・検証結果は [../docs/仕様書.md](../docs/仕様書.md) を参照してください。このREADMEは実装済みの
 アプリを**セットアップ・実行・配布**するための実用ドキュメントです。
@@ -23,22 +28,33 @@ GUI（Tauri 2 + React）から操作するためのラッパーアプリです�
 
 - **チャット**: `thread/start`〜`turn/start`〜`turn/completed`の流れをGUIで操作。アシスタント応答は
   Markdownとして整形表示（react-markdown + remark-gfm）
+- **接続方式の選択**: サイドバーの「接続方式」でWSL／Windows-nativeを切り替え。接続前は接続パネルのみの
+  最小画面（プロバイダ・接続方式・codexパス・モデル・推論レベル・速度・接続ボタン）が表示され、初回接続に
+  成功すると通常のフル画面（プロジェクト・スレッド一覧・チャット）に切り替わる
+- **モデル・推論レベル・速度の指定**: モデルはGPT-5.6-Sol/Terra/Lunaのプリセット（「その他」で任意ID入力も
+  可）から選択。推論レベル（`effort`）・速度（`serviceTier`）は接続前に指定でき、接続後もフッターの🎚/🚀
+  バッジからいつでも変更可能（次のメッセージから反映。スレッド再読み込み不要）
 - **スレッド管理**: 一覧表示・再開（`thread/resume`）・インライン名前変更（`thread/name/set`）。未接続時に
   スレッドを選ぶと「接続しますか？」の確認ダイアログを出してから接続
-- **プロジェクト選択**: Windowsのフォルダ選択ダイアログから`\\wsl.localhost\<distro>\...`を選択し、
-  WSLパスへ変換して登録。スレッドを開くとそのスレッド自身の`cwd`に追従
+- **プロジェクト選択**: WSLモードではWindowsのフォルダ選択ダイアログから`\\wsl.localhost\<distro>\...`を
+  選択しWSLパスへ変換して登録、Windows-nativeモードでは選んだWindowsパスをそのまま使用。スレッドを開くと
+  そのスレッド自身の`cwd`に追従
 - **承認UI**: `item/commandExecution/requestApproval`等のリクエストに含まれる`availableDecisions`
   配列から、そのリクエストで実際に有効な選択肢だけを動的にボタン化
 - **Stop**: `turn/interrupt`のみを送信し、app-serverプロセス自体は終了しない
 - **「/」コマンド補完**: `/new` `/goal <text>` `/compact` `/diff` `/status` `/copy` `/model` `/stop`
   `/usage` `/help`。↑↓で選択、Tab/Enterで実行、Escで閉じる
 - **使用量バッジ**: 接続時・ターン完了ごとに`account/rateLimits/read`を自動取得し、フッターに残量%を常時表示
-  （Codex公式アカウント画面と同じ「残り○%」表記）
-- **WSLターミナル / エクスプローラーを開く**: 選択中のWSLパスに対してワンクリックで起動
-- **ドラッグ&ドロップ**: エクスプローラーからファイルをコンポーザーにドロップすると、Windowsパスを自動で
-  WSLパス（`/home/...`）に変換して挿入。選択中とは別のWSLディストリのUNCパスは拒否
-- **画像貼り付け**: クリップボード画像を`Ctrl+V`で添付。保存中は送信を待たせ、接続・ディストリ・スレッドを
-  またぐ誤添付を防止。WSL側の一時画像は取り消し・turn完了・切断時に削除
+  （Codex公式アカウント画面と同じ「残り○%」表記）。プラン枠を使い切り購入クレジットの消費が始まった場合は、
+  残クレジット残高を別色のバッジで表示
+- **ターミナル / エクスプローラーを開く**: 選択中のプロジェクトパスに対してワンクリックで起動（WSLモードは
+  WSL端末・`\\wsl.localhost\...`、Windows-nativeモードは`cmd.exe`・通常のフォルダウィンドウ）
+- **ドラッグ&ドロップ**: エクスプローラーからファイルをコンポーザーにドロップすると、WSLモードではWindows
+  パスを自動でWSLパス（`/home/...`）に変換して挿入（選択中とは別のWSLディストリのUNCパスは拒否）、
+  Windows-nativeモードではWindowsパスをそのまま挿入
+- **画像貼り付け**: クリップボード画像を`Ctrl+V`で添付。保存中は送信を待たせ、接続・ディストリ（または
+  接続方式）・スレッドをまたぐ誤添付を防止。一時画像（WSLモードは`/tmp`、Windows-nativeモードは`%TEMP%`）は
+  取り消し・turn完了・切断時に削除
 - **日本語IME対応**: 変換確定前のEnterで誤送信しない
 
 ## 動作要件
@@ -53,13 +69,19 @@ GUI（Tauri 2 + React）から操作するためのラッパーアプリです�
 | MSVC Build Tools | Visual Studio Build Tools（または Visual Studio）の「C++によるデスクトップ開発」ワークロード |
 | WebView2 Runtime | Windows 11は標準搭載。Windows 10は別途インストールが必要な場合あり |
 
-### WSL側
+### WSL側（WSLモードを使う場合）
 
 | 項目 | 要件 |
 |---|---|
 | ディストリ | Ubuntu等（開発時はUbuntu-24.04で確認） |
 | Node.js | Codex CLIを動かせるバージョン（nvm経由を推奨。開発時はv22.22.2で確認） |
 | Codex CLI | `npm install -g @openai/codex@latest`で**WSL内から**インストールしたもの（詳細は下記トラブルシューティング） |
+
+### Windows側（Windows-nativeモードを使う場合）
+
+| 項目 | 要件 |
+|---|---|
+| Codex CLI | `npm install -g @openai/codex@latest`で**Windows側から**インストールしたもの（`@openai/codex`が`optionalDependencies`として`codex-win32-x64`／`codex-win32-arm64`を公式配布している）。WSL自体は不要 |
 
 ## 新しいPCへの導入手順
 
@@ -155,14 +177,21 @@ WebView2）が別途必要**です。アプリ自体はCodexの実行環境を�
 
 ## 初回起動時の設定
 
-アプリ下部の「接続」欄に以下を入力し、「接続」を押します。
+起動直後は接続パネルのみの最小画面が表示されます。以下を入力し、「接続」を押します。
 
-1. **WSLディストリ**: `wsl -l -v`で確認できるディストリ名（例: `Ubuntu-24.04`）
-2. **codex絶対パス（WSL内）**: 上記手順2で控えたパス（例: `/home/user/.nvm/versions/node/v22.22.2/bin/codex`）
+1. **プロバイダ**: OpenAI（既定）または Ollama（ローカル）
+2. **接続方式**: 「WSL内のcodex CLI」（既定）または「Windows側のcodex CLI」
+   - WSL内を選んだ場合: **WSLディストリ**（`wsl -l -v`で確認できるディストリ名。例: `Ubuntu-24.04`）と
+     **codex絶対パス（WSL内）**（上記手順2で控えたパス。例:
+     `/home/user/.nvm/versions/node/v22.22.2/bin/codex`）を入力
+   - Windows側を選んだ場合: **codex絶対パス（Windows）**（`where codex.cmd`で見つかった絶対パスが自動入力
+     される。見つからない場合は手入力）
+3. **モデル・推論レベル・速度**（OpenAIプロバイダ時）: 任意。未指定ならサーバー側の設定に従う
 
-接続に成功すると入力欄は隠れ、「切断」ボタンだけが残ります。次に「プロジェクト」欄でWSL内の作業ディレクトリを
-選び、「新しいスレッド」でチャットを開始できます。設定はブラウザのlocalStorageに保存されるため、次回起動時は
-再入力不要です。
+接続に成功すると、接続パネルのみの最小画面から通常のフル画面（プロジェクト・スレッド一覧・チャット）に切り
+替わります。次に「プロジェクト」欄で作業ディレクトリを選び、「新しいスレッド」でチャットを開始できます。
+設定はブラウザのlocalStorageに保存されるため、次回起動時は再入力不要です（ただし起動直後の最小画面表示は
+毎回のアプリ起動でリセットされます）。
 
 ## トラブルシューティング
 
@@ -211,15 +240,22 @@ WindowsTerminal_8wekyb3d8bbwe\LocalState\settings.json` から編集できます
 ```text
 Windows GUI（Tauri Rustバックエンド）
     │ 子プロセスの標準入出力パイプ（ネットワークポート不使用）
-    ▼
-wsl.exe -d <distro> --exec <codexの絶対パス> app-server
-    │ JSONL（改行区切りJSON）
-    ▼
-WSL2内の codex app-server（stdio既定モード）
+    │
+    ├─ WSLモード ──▶ wsl.exe -d <distro> --exec <codexの絶対パス> app-server
+    │                     │ JSONL（改行区切りJSON）
+    │                     ▼
+    │                WSL2内の codex app-server（stdio既定モード）
+    │
+    └─ Windows-nativeモード ──▶ cmd.exe /c <codexの絶対パス> app-server
+                                    │ JSONL（改行区切りJSON）
+                                    ▼
+                               Windows上の codex app-server（stdio既定モード）
 ```
 
-- 通信はRust側（`src-tauri/src/appserver.rs`）が担い、JSONLの送受信・リクエストID管理・stdout汚染検出・
-  stdout/stderrの継続的なドレインを行う
+- 接続方式に関わらず子プロセスの標準入出力パイプで直結し、ネットワークポートは使用しない
+- どちらのモードで起動するかは`Connection::spawn`（`src-tauri/src/appserver.rs`）が`connection_mode`引数
+  で分岐する。以降のJSON-RPC送受信・リクエストID管理・stdout汚染検出・stdout/stderrの継続的なドレインは
+  モードによらず共通のコードが担う
 - サーバーからの通知・承認要求はTauriイベント（`codex:notification`、`codex:server-request`等）として
   フロントエンドへ転送される
 - フロントエンド（`src/App.tsx`）はプロトコル型（`src/types.ts`、`codex app-server generate-ts`で生成した
