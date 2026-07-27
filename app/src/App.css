@@ -247,6 +247,9 @@ body { background: var(--bg); color: var(--text); }
   display: inline-block; margin-left: 6px; padding: 0 6px; font-size: 10px;
   background: var(--accent); color: #fff; border-radius: 3px;
 }
+.model-list .tag.secondary {
+  background: var(--muted); color: #fff;
+}
 .model-list .desc { font-size: 11px; color: var(--muted); }
 
 .usage-window { margin: 10px 0; }

@@ -318,6 +318,39 @@ export default function App() {
   };
   const [effortPickerOpen, setEffortPickerOpen] = useState(false);
   const [speedPickerOpen, setSpeedPickerOpen] = useState(false);
+  // What config/read actually reported as the server's currently-effective
+  // model_reasoning_effort/service_tier -- distinct from reasoningEffort's
+  // own null-ness (which just means "this app isn't overriding it"). Queried
+  // at most once per connection (configSyncedRef), the first time either
+  // picker is opened, so opening it repeatedly doesn't re-fetch. Reset on
+  // every (re)connect since a fresh app-server process may read a
+  // config.toml that changed since the last connection.
+  const configSyncedRef = useRef(false);
+  const [effortServerValue, setEffortServerValue] = useState<string | null>(null);
+  const [serviceTierServerValue, setServiceTierServerValue] = useState<string | null>(null);
+  const syncServerConfigOnce = async () => {
+    if (configSyncedRef.current) return;
+    configSyncedRef.current = true;
+    try {
+      const raw = await invoke<{ config?: Record<string, unknown> }>("rpc_request", {
+        method: "config/read",
+        params: {},
+      });
+      const cfg = raw?.config ?? {};
+      setEffortServerValue(typeof cfg.model_reasoning_effort === "string" ? cfg.model_reasoning_effort : null);
+      setServiceTierServerValue(typeof cfg.service_tier === "string" ? cfg.service_tier : null);
+    } catch {
+      // silent -- the picker just won't show a "現在のサーバー値" hint
+    }
+  };
+  const openEffortPicker = () => {
+    setEffortPickerOpen(true);
+    void syncServerConfigOnce();
+  };
+  const openSpeedPicker = () => {
+    setSpeedPickerOpen(true);
+    void syncServerConfigOnce();
+  };
   const [threadTokenUsage, setThreadTokenUsage] = useState<ThreadTokenUsage | null>(null);
   const [usagePanel, setUsagePanel] = useState<GetAccountRateLimitsResponse | null>(null);
   const [usageModalOpen, setUsageModalOpen] = useState(false);
@@ -1008,6 +1041,12 @@ export default function App() {
       setInitInfo(info as InitializeResponse);
       setConnState("connected");
       setThreadApprovalPolicies({});
+      // A fresh app-server process may have loaded a config.toml that
+      // changed since the last connection -- force the next picker open to
+      // re-query rather than showing a stale server value.
+      configSyncedRef.current = false;
+      setEffortServerValue(null);
+      setServiceTierServerValue(null);
       const codexVersion = parseCodexCliVersion(info.userAgent);
       if (
         codexVersion &&
@@ -1061,6 +1100,9 @@ export default function App() {
       setUsagePanel(null);
       setUsageModalOpen(false);
       setDefaultModelLabel(null);
+      configSyncedRef.current = false;
+      setEffortServerValue(null);
+      setServiceTierServerValue(null);
       // Keep modelOverride across a reconnect (the point of setting it is to
       // stick until the user changes it); only the default-model lookup and
       // usage data are connection-scoped and need to be cleared.
@@ -2020,7 +2062,7 @@ export default function App() {
                         onChange={(e) => onReasoningEffortChange(e.target.value)}
                         title="turn/startのeffortとして毎ターン送信されます。接続後もフッターのバッジからいつでも変更できます"
                       >
-                        <option value="">モデルの既定値のまま</option>
+                        <option value="">指定なし（サーバー側の設定に従う）</option>
                         {REASONING_EFFORTS.map((r) => (
                           <option key={r.value} value={r.value}>
                             {r.label}
@@ -2035,7 +2077,7 @@ export default function App() {
                         onChange={(e) => onServiceTierChange(e.target.value)}
                         title="turn/startのserviceTierとして毎ターン送信されます。接続後もフッターのバッジからいつでも変更できます"
                       >
-                        <option value="">モデルの既定値のまま</option>
+                        <option value="">指定なし（サーバー側の設定に従う）</option>
                         {SERVICE_TIERS.map((s) => (
                           <option key={s.value} value={s.value}>
                             {s.label}
@@ -2251,7 +2293,7 @@ export default function App() {
                     setEffortPickerOpen(false);
                   }}
                 >
-                  <strong>モデルの既定値のまま</strong>
+                  <strong>指定なし（サーバー側の設定に従う）</strong>
                   {reasoningEffort === null && <span className="tag">選択中</span>}
                 </button>
               </li>
@@ -2265,6 +2307,9 @@ export default function App() {
                   >
                     <strong>{r.label}</strong>
                     {reasoningEffort === r.value && <span className="tag">選択中</span>}
+                    {reasoningEffort === null && effortServerValue === r.value && (
+                      <span className="tag secondary">現在のサーバー値</span>
+                    )}
                   </button>
                 </li>
               ))}
@@ -2288,7 +2333,7 @@ export default function App() {
                     setSpeedPickerOpen(false);
                   }}
                 >
-                  <strong>モデルの既定値のまま</strong>
+                  <strong>指定なし（サーバー側の設定に従う）</strong>
                   {serviceTier === null && <span className="tag">選択中</span>}
                 </button>
               </li>
@@ -2302,6 +2347,9 @@ export default function App() {
                   >
                     <strong>{s.label}</strong>
                     {serviceTier === s.value && <span className="tag">選択中</span>}
+                    {serviceTier === null && serviceTierServerValue === s.value && (
+                      <span className="tag secondary">現在のサーバー値</span>
+                    )}
                   </button>
                 </li>
               ))}
@@ -2490,17 +2538,17 @@ export default function App() {
             )}
             <button
               className="model-footer-badge"
-              onClick={() => setEffortPickerOpen(true)}
+              onClick={openEffortPicker}
               title="推論レベルを変更（次のメッセージから反映）"
             >
-              🎚 {REASONING_EFFORTS.find((r) => r.value === reasoningEffort)?.label ?? "既定"}
+              🎚 {REASONING_EFFORTS.find((r) => r.value === reasoningEffort)?.label ?? "指定なし"}
             </button>
             <button
               className="model-footer-badge"
-              onClick={() => setSpeedPickerOpen(true)}
+              onClick={openSpeedPicker}
               title="速度を変更（次のメッセージから反映）"
             >
-              🚀 {SERVICE_TIERS.find((s) => s.value === serviceTier)?.label ?? "既定"}
+              🚀 {SERVICE_TIERS.find((s) => s.value === serviceTier)?.label ?? "指定なし"}
             </button>
           </span>
         )}
