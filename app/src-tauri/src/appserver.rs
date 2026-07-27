@@ -126,14 +126,29 @@ impl Connection {
 
     /// Spawn the app-server child process and start the reader tasks.
     /// Does NOT run the initialize handshake; the caller does that.
+    ///
+    /// `connection_mode` is `"native"` for a codex CLI installed directly on
+    /// Windows, or anything else (in practice `"wsl"`) for the original
+    /// WSL2-hosted codex reached via `wsl.exe`. `distro` is ignored in native
+    /// mode. Native mode wraps `codex_path` in `cmd.exe /c` because Windows
+    /// can't exec a `.cmd` shim directly (verified: `Command::new(codex_path)`
+    /// alone fails, matching Node's `spawn EINVAL` on the same shim).
     pub async fn spawn(
         app: AppHandle,
+        connection_mode: &str,
         distro: &str,
         codex_path: &str,
         config_overrides: &[String],
     ) -> Result<Arc<Self>, String> {
-        let mut cmd = Command::new("wsl.exe");
-        cmd.args(["-d", distro, "--exec", codex_path, "app-server"]);
+        let mut cmd = if connection_mode == "native" {
+            let mut c = Command::new("cmd.exe");
+            c.args(["/c", codex_path, "app-server"]);
+            c
+        } else {
+            let mut c = Command::new("wsl.exe");
+            c.args(["-d", distro, "--exec", codex_path, "app-server"]);
+            c
+        };
         // e.g. "model_provider=ollama", "model=gpt-oss:20b" -- never written to
         // config.toml, only applied to this one spawned process (see -c in
         // `codex app-server --help`), so the default provider used by every
@@ -148,9 +163,13 @@ impl Connection {
         #[cfg(windows)]
         cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
 
-        let mut child = cmd
-            .spawn()
-            .map_err(|e| format!("failed to spawn wsl.exe: {e}"))?;
+        let mut child = cmd.spawn().map_err(|e| {
+            if connection_mode == "native" {
+                format!("failed to spawn cmd.exe: {e}")
+            } else {
+                format!("failed to spawn wsl.exe: {e}")
+            }
+        })?;
 
         let stdin = child.stdin.take().ok_or("no stdin handle")?;
         let stdout = child.stdout.take().ok_or("no stdout handle")?;

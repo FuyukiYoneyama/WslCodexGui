@@ -41,6 +41,37 @@ fn pasted_image_filename(path: &str) -> Result<&str, String> {
     Ok(filename)
 }
 
+/// Native-mode counterpart to `pasted_image_filename`: validates that `path`
+/// is a WslCodexGui-generated pasted-image file sitting directly inside the
+/// Windows temp directory (same generated-filename shape, different root),
+/// so `delete_pasted_image` can't be turned into an arbitrary-file-delete API
+/// in native mode either.
+fn pasted_image_filename_native(path: &str) -> Result<String, String> {
+    let temp_dir = std::env::temp_dir();
+    let path_buf = std::path::Path::new(path);
+    if path_buf.parent() != Some(temp_dir.as_path()) {
+        return Err("pasted image path is outside the temp directory".into());
+    }
+    let filename = path_buf
+        .file_name()
+        .and_then(|f| f.to_str())
+        .ok_or("invalid pasted image filename")?;
+    let generated = filename
+        .strip_prefix("wslcodexgui-paste-")
+        .ok_or("not a WslCodexGui pasted image path")?;
+    let (uuid, ext) = generated
+        .rsplit_once('.')
+        .ok_or("invalid WslCodexGui pasted image filename")?;
+    if uuid::Uuid::parse_str(uuid).is_err()
+        || ext.is_empty()
+        || ext.len() > 10
+        || !ext.chars().all(|c| c.is_ascii_alphanumeric())
+    {
+        return Err("not a WslCodexGui pasted image path".into());
+    }
+    Ok(filename.to_string())
+}
+
 /// At most one live app-server connection (primary architecture: the child
 /// process is owned by the GUI and always "owned" per N-14).
 struct AppState {
@@ -51,6 +82,7 @@ struct AppState {
 async fn connect(
     app: AppHandle,
     state: State<'_, AppState>,
+    connection_mode: String,
     distro: String,
     codex_path: String,
     config_overrides: Vec<String>,
@@ -60,7 +92,7 @@ async fn connect(
         old.shutdown().await;
     }
 
-    let conn = Connection::spawn(app, &distro, &codex_path, &config_overrides)
+    let conn = Connection::spawn(app, &connection_mode, &distro, &codex_path, &config_overrides)
         .await
         .map_err(RpcFailure::from)?;
 
@@ -162,12 +194,27 @@ async fn reject_server_request(
 /// approach already used to edit files inside WSL from Rust elsewhere in
 /// this app (no shell/wsl.exe invocation needed for a plain file write).
 #[tauri::command]
-async fn save_pasted_image(distro: String, bytes: Vec<u8>, ext: String) -> Result<String, String> {
-    validate_distro(&distro)?;
+async fn save_pasted_image(
+    connection_mode: String,
+    distro: String,
+    bytes: Vec<u8>,
+    ext: String,
+) -> Result<String, String> {
     if ext.is_empty() || ext.len() > 10 || !ext.chars().all(|c| c.is_ascii_alphanumeric()) {
         return Err("invalid pasted image extension".into());
     }
     let filename = format!("wslcodexgui-paste-{}.{}", uuid::Uuid::new_v4(), ext);
+    if connection_mode == "native" {
+        // Native mode: app-server runs directly on Windows, so the pasted
+        // image can live in the ordinary Windows temp dir and be attached
+        // via its plain Windows path -- no /tmp or WSL UNC involved.
+        let win_path = std::env::temp_dir().join(&filename);
+        tokio::fs::write(&win_path, &bytes)
+            .await
+            .map_err(|e| format!("failed to write pasted image: {e}"))?;
+        return Ok(win_path.to_string_lossy().into_owned());
+    }
+    validate_distro(&distro)?;
     let win_path = format!("\\\\wsl.localhost\\{distro}\\tmp\\{filename}");
     tokio::fs::write(&win_path, &bytes)
         .await
@@ -175,10 +222,23 @@ async fn save_pasted_image(distro: String, bytes: Vec<u8>, ext: String) -> Resul
     Ok(format!("/tmp/{filename}"))
 }
 
-/// Remove only files created by `save_pasted_image`; arbitrary WSL paths are
+/// Remove only files created by `save_pasted_image`; arbitrary paths are
 /// deliberately rejected so the frontend cannot turn this into a delete API.
 #[tauri::command]
-async fn delete_pasted_image(distro: String, path: String) -> Result<(), String> {
+async fn delete_pasted_image(
+    connection_mode: String,
+    distro: String,
+    path: String,
+) -> Result<(), String> {
+    if connection_mode == "native" {
+        let filename = pasted_image_filename_native(&path)?;
+        let win_path = std::env::temp_dir().join(filename);
+        return match tokio::fs::remove_file(&win_path).await {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(format!("failed to delete pasted image: {error}")),
+        };
+    }
     validate_distro(&distro)?;
     let filename = pasted_image_filename(&path)?;
     let win_path = format!("\\\\wsl.localhost\\{distro}\\tmp\\{filename}");
@@ -356,6 +416,100 @@ async fn verify_codex_path(distro: String, path: String) -> Result<bool, String>
         .await
         .map_err(|e| format!("failed to run wsl.exe: {e}"))?;
     Ok(output.status.success())
+}
+
+/// Locate a natively-installed Windows codex via `where`, mirroring
+/// `detect_codex_path`'s role for WSL. `where codex` lists every PATHEXT
+/// match; `codex.cmd` (the npm-installed shim) is preferred since that's the
+/// form verified to work when wrapped in `cmd.exe /c` by `Connection::spawn`.
+#[tauri::command]
+async fn detect_codex_path_native() -> Result<Option<String>, String> {
+    async fn where_first(needle: &str) -> Option<String> {
+        let mut cmd = tokio::process::Command::new("cmd.exe");
+        cmd.args(["/c", "where", needle]);
+        #[cfg(windows)]
+        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+        let output = cmd.output().await.ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .map(str::trim)
+            .find(|l| !l.is_empty())
+            .map(str::to_string)
+    }
+
+    if let Some(path) = where_first("codex.cmd").await {
+        return Ok(Some(path));
+    }
+    if let Some(path) = where_first("codex.exe").await {
+        return Ok(Some(path));
+    }
+    Ok(None)
+}
+
+/// Check that `path` is a file on disk (used to validate a hand-entered
+/// native codex path before enabling the connect button). Executability
+/// can't be checked cheaply on Windows the way `test -x` does on WSL, so this
+/// only rules out missing/non-file paths; an actual bad executable still
+/// surfaces loudly as a spawn failure on connect.
+#[tauri::command]
+async fn verify_codex_path_native(path: String) -> Result<bool, String> {
+    if path.trim().is_empty() || path.contains('\u{0}') {
+        return Ok(false);
+    }
+    Ok(tokio::fs::metadata(&path)
+        .await
+        .map(|m| m.is_file())
+        .unwrap_or(false))
+}
+
+/// Open an interactive Windows shell at `path` in its own console window
+/// (native-mode counterpart to `open_wsl_terminal`). Sets the child's cwd
+/// directly rather than building a `cd`-then-path shell command, so `path`
+/// never passes through cmd.exe's argument/quoting rules.
+#[tauri::command]
+fn open_native_terminal(path: String) -> Result<(), String> {
+    if path.trim().is_empty() {
+        return Err("terminal path must not be empty".into());
+    }
+    let mut command = std::process::Command::new("cmd.exe");
+    command.current_dir(&path);
+    #[cfg(windows)]
+    command.creation_flags(0x0000_0010); // CREATE_NEW_CONSOLE
+    command
+        .spawn()
+        .map_err(|e| format!("failed to open terminal: {e}"))?;
+    Ok(())
+}
+
+/// Open `path` (an ordinary Windows path) in Explorer (native-mode
+/// counterpart to `open_in_explorer`; no WSL UNC conversion needed).
+#[tauri::command]
+fn open_in_explorer_native(path: String) -> Result<(), String> {
+    if path.trim().is_empty() {
+        return Err("Explorer path must not be empty".into());
+    }
+    std::process::Command::new("explorer.exe")
+        .arg(&path)
+        .spawn()
+        .map_err(|e| format!("failed to open Explorer: {e}"))?;
+    Ok(())
+}
+
+/// Open Explorer with `path` selected within its containing folder
+/// (native-mode counterpart to `reveal_in_explorer`).
+#[tauri::command]
+fn reveal_in_explorer_native(path: String) -> Result<(), String> {
+    if path.trim().is_empty() {
+        return Err("Explorer path must not be empty".into());
+    }
+    std::process::Command::new("explorer.exe")
+        .arg(format!("/select,{path}"))
+        .spawn()
+        .map_err(|e| format!("failed to open Explorer: {e}"))?;
+    Ok(())
 }
 
 #[derive(serde::Serialize)]
@@ -565,13 +719,18 @@ pub fn run() {
             open_wsl_terminal,
             open_in_explorer,
             reveal_in_explorer,
+            open_native_terminal,
+            open_in_explorer_native,
+            reveal_in_explorer_native,
             save_pasted_image,
             delete_pasted_image,
             windows_path_to_wsl,
             list_ollama_models,
             list_wsl_distros,
             detect_codex_path,
-            verify_codex_path
+            verify_codex_path,
+            detect_codex_path_native,
+            verify_codex_path_native
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -579,7 +738,10 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::{pasted_image_filename, strip_wsl_unc, validate_distro, wsl_exec_args};
+    use super::{
+        pasted_image_filename, pasted_image_filename_native, strip_wsl_unc, validate_distro,
+        wsl_exec_args,
+    };
 
     #[test]
     fn wsl_commands_use_exec_argument_boundary() {
@@ -628,6 +790,32 @@ mod tests {
         assert!(pasted_image_filename("/home/user/wslcodexgui-paste-1234.png").is_err());
         assert!(pasted_image_filename("/tmp/wslcodexgui-paste-not-a-uuid.png").is_err());
         assert!(pasted_image_filename("/tmp/wslcodexgui-paste-dir/file.png").is_err());
+    }
+
+    #[test]
+    fn pasted_image_delete_scope_is_narrow_native() {
+        let valid = std::env::temp_dir()
+            .join("wslcodexgui-paste-550e8400-e29b-41d4-a716-446655440000.png")
+            .to_string_lossy()
+            .into_owned();
+        assert_eq!(
+            pasted_image_filename_native(&valid).unwrap(),
+            "wslcodexgui-paste-550e8400-e29b-41d4-a716-446655440000.png"
+        );
+        let unrelated = std::env::temp_dir()
+            .join("unrelated.png")
+            .to_string_lossy()
+            .into_owned();
+        assert!(pasted_image_filename_native(&unrelated).is_err());
+        assert!(pasted_image_filename_native(
+            r"C:\Users\someone\wslcodexgui-paste-1234.png"
+        )
+        .is_err());
+        let bad_uuid = std::env::temp_dir()
+            .join("wslcodexgui-paste-not-a-uuid.png")
+            .to_string_lossy()
+            .into_owned();
+        assert!(pasted_image_filename_native(&bad_uuid).is_err());
     }
 
     #[test]

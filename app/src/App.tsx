@@ -154,10 +154,23 @@ function decisionLabel(d: ApprovalDecision): string {
 }
 
 export default function App() {
+  // "wsl" (original): app-server runs inside a WSL2 distro via wsl.exe.
+  // "native": app-server is a codex CLI installed directly on Windows,
+  // spawned without wsl.exe (see appserver.rs's Connection::spawn branch).
+  // Kept as a distinct localStorage key per path-shaped field below
+  // (codexPath/projectPaths/projectCwd) since WSL paths ("/home/...") and
+  // Windows paths ("C:\...") are never interchangeable.
+  const [connectionMode, setConnectionModeState] = useState<"wsl" | "native">(
+    () => (localStorage.getItem("connectionMode") as "wsl" | "native" | null) ?? "wsl"
+  );
+  const codexPathStorageKey = connectionMode === "native" ? "codexPathNative" : "codexPath";
+  const projectPathsStorageKey = connectionMode === "native" ? "projectPathsNative" : "projectPaths";
+  const projectCwdStorageKey = connectionMode === "native" ? "projectCwdNative" : "projectCwd";
+
   const [distro, setDistro] = useState(() => localStorage.getItem("distro") ?? "Ubuntu-24.04");
   const [distros, setDistros] = useState<WslDistroInfo[]>([]);
   const [codexPath, setCodexPath] = useState(
-    () => localStorage.getItem("codexPath") ?? DEFAULT_CODEX_PATH
+    () => localStorage.getItem(codexPathStorageKey) ?? (connectionMode === "native" ? "" : DEFAULT_CODEX_PATH)
   );
   const [codexStatus, setCodexStatus] = useState<CodexPathStatus>("checking");
   const [codexNotice, setCodexNotice] = useState<string | null>(null);
@@ -183,10 +196,13 @@ export default function App() {
   // Explorer picker (browseForProject) or that a resumed thread's own cwd
   // pointed at — never an automatic filesystem scan.
   const [projectPaths, setProjectPaths] = useState<string[]>(() =>
-    loadStringList("projectPaths", [DEFAULT_PROJECT_PATH])
+    loadStringList(projectPathsStorageKey, connectionMode === "native" ? [] : [DEFAULT_PROJECT_PATH])
   );
   const [projectCwd, setProjectCwd] = useState(
-    () => localStorage.getItem("projectCwd") ?? loadStringList("projectPaths", [DEFAULT_PROJECT_PATH])[0]
+    () =>
+      localStorage.getItem(projectCwdStorageKey) ??
+      loadStringList(projectPathsStorageKey, connectionMode === "native" ? [] : [DEFAULT_PROJECT_PATH])[0] ??
+      ""
   );
   // Applies the next time a thread is first loaded by the running
   // app-server process (new thread, or an existing thread not yet opened
@@ -296,6 +312,8 @@ export default function App() {
   activeThreadIdRef.current = activeThreadId;
   const distroRef = useRef(distro);
   distroRef.current = distro;
+  const connectionModeRef = useRef(connectionMode);
+  connectionModeRef.current = connectionMode;
   const pastedImagesRef = useRef<PastedImage[]>([]);
   pastedImagesRef.current = pastedImages;
   const pasteGenerationRef = useRef(0);
@@ -309,7 +327,11 @@ export default function App() {
   const connectionIdRef = useRef<string | null>(null);
 
   const deletePastedImageFile = useCallback((image: Pick<PastedImage, "distro" | "wslPath">) => {
-    void invoke("delete_pasted_image", { distro: image.distro, path: image.wslPath }).catch((error) => {
+    void invoke("delete_pasted_image", {
+      connectionMode: connectionModeRef.current,
+      distro: image.distro,
+      path: image.wslPath,
+    }).catch((error) => {
       setErrorBanner(`一時画像の削除に失敗しました: ${error}`);
     });
   }, []);
@@ -454,6 +476,12 @@ export default function App() {
           // only and occasionally disagreed with the drop event's own
           // position, silently swallowing otherwise-valid drops.
           void (async () => {
+            // Native mode: app-server reads plain Windows paths directly, no
+            // WSL UNC conversion needed.
+            if (connectionModeRef.current === "native") {
+              setInput((prev) => (prev ? `${prev} ${p.paths.join(" ")}` : p.paths.join(" ")));
+              return;
+            }
             const wslPaths: string[] = [];
             for (const winPath of p.paths) {
               try {
@@ -523,9 +551,51 @@ export default function App() {
     }
   }, []);
 
+  // Native-mode counterpart to resolveCodexPath: no distro, verifies/detects
+  // a codex installed directly on Windows via detect_codex_path_native /
+  // verify_codex_path_native.
+  const resolveCodexPathNative = useCallback(async (candidate: string | null) => {
+    const gen = ++codexCheckGenRef.current;
+    window.clearTimeout(verifyTimerRef.current);
+    setCodexStatus("checking");
+    setCodexNotice(null);
+    try {
+      if (candidate?.trim()) {
+        const ok = await invoke<boolean>("verify_codex_path_native", { path: candidate.trim() });
+        if (gen !== codexCheckGenRef.current) return;
+        if (ok) {
+          setCodexPath(candidate.trim());
+          setCodexStatus("ok");
+          return;
+        }
+      }
+      const found = await invoke<string | null>("detect_codex_path_native");
+      if (gen !== codexCheckGenRef.current) return;
+      if (found) {
+        setCodexPath(found);
+        setCodexStatus("ok");
+      } else {
+        setCodexPath("");
+        setCodexStatus("ng");
+        setCodexNotice(
+          "Windows側でcodexが見つかりませんでした。PowerShellで `where codex` を実行し、表示された絶対パス（拡張子.cmdのものを推奨）を手入力してください。"
+        );
+      }
+    } catch (e) {
+      if (gen !== codexCheckGenRef.current) return;
+      setCodexStatus("ng");
+      setCodexNotice(`codexパスの確認に失敗しました: ${e}`);
+    }
+  }, []);
+
   // Startup: enumerate installed WSL distros, preselect the stored one if it
-  // still exists (else the WSL default), then resolve its codex path.
+  // still exists (else the WSL default), then resolve its codex path. Native
+  // mode has no distro concept, so it resolves directly from storage.
   useEffect(() => {
+    if (connectionModeRef.current === "native") {
+      void resolveCodexPathNative(localStorage.getItem("codexPathNative"));
+      return;
+    }
     void (async () => {
       const storedDistro = localStorage.getItem("distro");
       const storedPath = localStorage.getItem("codexPath") ?? DEFAULT_CODEX_PATH;
@@ -551,6 +621,38 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Switching connection mode swaps in that mode's own saved codex
+  // path/project history (see codexPathStorageKey etc. above) and re-checks
+  // it, instead of leaving the other mode's WSL/Windows-shaped path behind.
+  const modeSwitchedOnceRef = useRef(false);
+  useEffect(() => {
+    if (!modeSwitchedOnceRef.current) {
+      modeSwitchedOnceRef.current = true; // skip the redundant run on mount
+      return;
+    }
+    if (connectionMode === "native") {
+      const storedPath = localStorage.getItem("codexPathNative") ?? "";
+      const paths = loadStringList("projectPathsNative", []);
+      setCodexPath(storedPath);
+      setProjectPaths(paths);
+      setProjectCwd(localStorage.getItem("projectCwdNative") ?? paths[0] ?? "");
+      void resolveCodexPathNative(storedPath || null);
+    } else {
+      const storedPath = localStorage.getItem("codexPath") ?? DEFAULT_CODEX_PATH;
+      const paths = loadStringList("projectPaths", [DEFAULT_PROJECT_PATH]);
+      setCodexPath(storedPath);
+      setProjectPaths(paths);
+      setProjectCwd(localStorage.getItem("projectCwd") ?? paths[0] ?? "");
+      void resolveCodexPath(distroRef.current, storedPath);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [connectionMode]);
+
+  const onConnectionModeChange = (mode: "wsl" | "native") => {
+    setConnectionModeState(mode);
+    localStorage.setItem("connectionMode", mode);
+  };
+
   const onDistroChange = (name: string) => {
     setDistro(name);
     localStorage.setItem("distro", name);
@@ -558,7 +660,8 @@ export default function App() {
   };
 
   // Manual codex-path entry: debounce, then verify the file actually exists
-  // (and is executable) inside the selected distro before enabling connect.
+  // (and is executable) inside the selected distro (WSL mode) or on the
+  // Windows filesystem (native mode) before enabling connect.
   const onCodexPathInput = (value: string) => {
     setCodexPath(value);
     const gen = ++codexCheckGenRef.current;
@@ -573,10 +676,13 @@ export default function App() {
     verifyTimerRef.current = window.setTimeout(() => {
       void (async () => {
         try {
-          const ok = await invoke<boolean>("verify_codex_path", {
-            distro: distroRef.current,
-            path: value.trim(),
-          });
+          const ok =
+            connectionModeRef.current === "native"
+              ? await invoke<boolean>("verify_codex_path_native", { path: value.trim() })
+              : await invoke<boolean>("verify_codex_path", {
+                  distro: distroRef.current,
+                  path: value.trim(),
+                });
           if (gen !== codexCheckGenRef.current) return;
           setCodexStatus(ok ? "ok" : "ng");
           setCodexNotice(ok ? null : "指定されたパスに実行可能な codex が見つかりません。");
@@ -826,8 +932,8 @@ export default function App() {
       return false;
     }
     discardPastedImages();
-    localStorage.setItem("distro", distro);
-    localStorage.setItem("codexPath", codexPath);
+    if (connectionMode === "wsl") localStorage.setItem("distro", distro);
+    localStorage.setItem(codexPathStorageKey, codexPath);
     localStorage.setItem("provider", provider);
     localStorage.setItem("ollamaModel", ollamaModel);
     localStorage.setItem("ollamaContextWindow", ollamaContextWindow);
@@ -842,7 +948,7 @@ export default function App() {
     setConnState("connecting");
     setErrorBanner(null);
     try {
-      const raw = await invoke("connect", { distro, codexPath, configOverrides });
+      const raw = await invoke("connect", { connectionMode, distro, codexPath, configOverrides });
       const info = parseOrReport(InitializeResponseSchema, raw, "initialize", setErrorBanner);
       if (!info) {
         setConnState("disconnected");
@@ -961,11 +1067,11 @@ export default function App() {
       if (thread.cwd) {
         const cwd = thread.cwd;
         setProjectCwd(cwd);
-        localStorage.setItem("projectCwd", cwd);
+        localStorage.setItem(projectCwdStorageKey, cwd);
         setProjectPaths((prev) => {
           if (prev.includes(cwd)) return prev;
           const next = [...prev, cwd].sort();
-          localStorage.setItem("projectPaths", JSON.stringify(next));
+          localStorage.setItem(projectPathsStorageKey, JSON.stringify(next));
           return next;
         });
       }
@@ -1060,10 +1166,12 @@ export default function App() {
 
   const newThread = async () => {
     if (!projectCwd.trim()) {
-      setErrorBanner("プロジェクトのWSLパスを選択してください");
+      setErrorBanner(
+        connectionMode === "native" ? "プロジェクトのフォルダを選択してください" : "プロジェクトのWSLパスを選択してください"
+      );
       return;
     }
-    localStorage.setItem("projectCwd", projectCwd);
+    localStorage.setItem(projectCwdStorageKey, projectCwd);
     setErrorBanner(null);
     try {
       const raw = await invoke("rpc_request", {
@@ -1085,7 +1193,11 @@ export default function App() {
 
   const openTerminalHere = async () => {
     try {
-      await invoke("open_wsl_terminal", { distro, path: projectCwd });
+      if (connectionMode === "native") {
+        await invoke("open_native_terminal", { path: projectCwd });
+      } else {
+        await invoke("open_wsl_terminal", { distro, path: projectCwd });
+      }
     } catch (e) {
       setErrorBanner(`ターミナルを開けませんでした: ${e}`);
     }
@@ -1093,31 +1205,46 @@ export default function App() {
 
   const openExplorerHere = async () => {
     try {
-      await invoke("open_in_explorer", { distro, path: projectCwd });
+      if (connectionMode === "native") {
+        await invoke("open_in_explorer_native", { path: projectCwd });
+      } else {
+        await invoke("open_in_explorer", { distro, path: projectCwd });
+      }
     } catch (e) {
       setErrorBanner(`エクスプローラーを開けませんでした: ${e}`);
     }
   };
 
   // Native Explorer-style folder picker instead of the flat discovered-list
-  // dropdown. WSL is browsable from Windows via the \\wsl.localhost\<distro>
-  // UNC form, so the dialog opens there and the chosen path is converted
-  // back to a WSL path with the same windows_path_to_wsl command the
-  // drag-and-drop handler already uses.
+  // dropdown. In WSL mode, WSL is browsable from Windows via the
+  // \\wsl.localhost\<distro> UNC form, so the dialog opens there and the
+  // chosen path is converted back to a WSL path via windows_path_to_wsl
+  // (also used by the drag-and-drop handler). In native mode the picked
+  // path is already the path app-server itself needs, so it's used as-is.
   const browseForProject = async () => {
     try {
+      const { open } = await import("@tauri-apps/plugin-dialog");
+      if (connectionMode === "native") {
+        const picked = await open({ directory: true, defaultPath: projectCwd || undefined });
+        if (!picked || typeof picked !== "string") return;
+        const next = projectPaths.includes(picked) ? projectPaths : [...projectPaths, picked].sort();
+        setProjectPaths(next);
+        localStorage.setItem(projectPathsStorageKey, JSON.stringify(next));
+        setProjectCwd(picked);
+        localStorage.setItem(projectCwdStorageKey, picked);
+        return;
+      }
       const startUnc = `\\\\wsl.localhost\\${distro}\\${(projectCwd || DEFAULT_PROJECT_PATH)
         .replace(/^\//, "")
         .replace(/\//g, "\\")}`;
-      const { open } = await import("@tauri-apps/plugin-dialog");
       const picked = await open({ directory: true, defaultPath: startUnc });
       if (!picked || typeof picked !== "string") return;
       const wslPath = await invoke<string>("windows_path_to_wsl", { path: picked, distro });
       const next = projectPaths.includes(wslPath) ? projectPaths : [...projectPaths, wslPath].sort();
       setProjectPaths(next);
-      localStorage.setItem("projectPaths", JSON.stringify(next));
+      localStorage.setItem(projectPathsStorageKey, JSON.stringify(next));
       setProjectCwd(wslPath);
-      localStorage.setItem("projectCwd", wslPath);
+      localStorage.setItem(projectCwdStorageKey, wslPath);
     } catch (e) {
       setErrorBanner(`フォルダ選択に失敗しました: ${e}`);
     }
@@ -1411,6 +1538,7 @@ export default function App() {
         try {
           const bytes = new Uint8Array(await blob.arrayBuffer());
           const wslPath = await invoke<string>("save_pasted_image", {
+            connectionMode: connectionModeRef.current,
             distro: context.distro,
             bytes: Array.from(bytes),
             ext,
@@ -1598,7 +1726,7 @@ export default function App() {
           <section>
             <h3>プロジェクト</h3>
             <label>
-              WSLパス（参照で選んだフォルダの履歴）
+              {connectionMode === "native" ? "フォルダ（参照で選んだフォルダの履歴）" : "WSLパス（参照で選んだフォルダの履歴）"}
               <div className="project-path-row">
                 <select value={projectCwd} onChange={onProjectSelectChange} title={projectCwd}>
                   {projectPaths.map((p) => (
@@ -1640,7 +1768,7 @@ export default function App() {
                 className="icon-btn"
                 onClick={() => void openTerminalHere()}
                 disabled={!projectCwd}
-                title="このWSLパスでターミナルを開く"
+                title={connectionMode === "native" ? "このフォルダでターミナルを開く" : "このWSLパスでターミナルを開く"}
               >
                 ⌨
               </button>
@@ -1648,7 +1776,7 @@ export default function App() {
                 className="icon-btn"
                 onClick={() => void openExplorerHere()}
                 disabled={!projectCwd}
-                title="このWSLパスをエクスプローラーで開く"
+                title={connectionMode === "native" ? "このフォルダをエクスプローラーで開く" : "このWSLパスをエクスプローラーで開く"}
               >
                 📁
               </button>
@@ -1767,38 +1895,54 @@ export default function App() {
             ) : (
               <>
                 <label>
-                  WSLディストリ
-                  {distros.length > 0 ? (
-                    <select value={distro} onChange={(e) => onDistroChange(e.target.value)}>
-                      {!distros.some((d) => d.name === distro) && (
-                        <option value={distro}>{distro}（未確認）</option>
-                      )}
-                      {distros.map((d) => (
-                        <option key={d.name} value={d.name}>
-                          {d.name}
-                          {d.is_default ? "（既定）" : ""}
-                        </option>
-                      ))}
-                    </select>
-                  ) : (
-                    // Fallback when enumeration failed: free text, re-check
-                    // codex when focus leaves the field.
-                    <input
-                      value={distro}
-                      onChange={(e) => {
-                        setDistro(e.target.value);
-                        localStorage.setItem("distro", e.target.value);
-                      }}
-                      onBlur={() => void resolveCodexPath(distro, codexPath)}
-                    />
-                  )}
+                  接続方式
+                  <select
+                    value={connectionMode}
+                    onChange={(e) => onConnectionModeChange(e.target.value as "wsl" | "native")}
+                  >
+                    <option value="wsl">WSL内のcodex CLI</option>
+                    <option value="native">Windows側のcodex CLI</option>
+                  </select>
                 </label>
+                {connectionMode === "wsl" && (
+                  <label>
+                    WSLディストリ
+                    {distros.length > 0 ? (
+                      <select value={distro} onChange={(e) => onDistroChange(e.target.value)}>
+                        {!distros.some((d) => d.name === distro) && (
+                          <option value={distro}>{distro}（未確認）</option>
+                        )}
+                        {distros.map((d) => (
+                          <option key={d.name} value={d.name}>
+                            {d.name}
+                            {d.is_default ? "（既定）" : ""}
+                          </option>
+                        ))}
+                      </select>
+                    ) : (
+                      // Fallback when enumeration failed: free text, re-check
+                      // codex when focus leaves the field.
+                      <input
+                        value={distro}
+                        onChange={(e) => {
+                          setDistro(e.target.value);
+                          localStorage.setItem("distro", e.target.value);
+                        }}
+                        onBlur={() => void resolveCodexPath(distro, codexPath)}
+                      />
+                    )}
+                  </label>
+                )}
                 <label>
-                  codex絶対パス（WSL内）
+                  {connectionMode === "native" ? "codex絶対パス（Windows）" : "codex絶対パス（WSL内）"}
                   <input
                     value={codexPath}
                     onChange={(e) => onCodexPathInput(e.target.value)}
-                    placeholder="/home/user/.nvm/.../bin/codex"
+                    placeholder={
+                      connectionMode === "native"
+                        ? String.raw`C:\Users\user\AppData\Roaming\npm\codex.cmd`
+                        : "/home/user/.nvm/.../bin/codex"
+                    }
                   />
                 </label>
                 <div className="codex-path-status">
@@ -1873,7 +2017,14 @@ export default function App() {
         <main className="chat">
           <div className={`transcript${activeTurnId ? " turn-active" : ""}`} ref={transcriptRef}>
             {items.map((di) => (
-              <TranscriptItem key={di.key} di={di} distro={distro} cwd={projectCwd} onLinkError={setErrorBanner} />
+              <TranscriptItem
+                key={di.key}
+                di={di}
+                distro={distro}
+                cwd={projectCwd}
+                connectionMode={connectionMode}
+                onLinkError={setErrorBanner}
+              />
             ))}
             {activeTurnId && <div className="working">Codex is working…</div>}
           </div>
@@ -2157,7 +2308,7 @@ export default function App() {
               ? "切断中…"
               : connState}
         </span>
-        <span>WSL: {distro}</span>
+        <span>{connectionMode === "native" ? "Windows-native" : `WSL: ${distro}`}</span>
         {initInfo && <span>{initInfo.userAgent.split(" ")[0]}</span>}
         {activeThreadId && <span>Thread: {activeThreadId.slice(0, 13)}…</span>}
         {provider === "ollama" && connState === "connected" && (
@@ -2288,6 +2439,17 @@ function wslPathToUnc(absolute: string, distro: string): string {
   return `\\\\wsl.localhost\\${distro}\\${absolute.replace(/^\//, "").replace(/\//g, "\\")}`;
 }
 
+// Native-mode counterpart to resolveAbsoluteWslPath: cwd and hrefs are
+// ordinary Windows paths, so joining uses backslashes and an already-rooted
+// href (drive letter or UNC) is left as-is instead of treated relative.
+function resolveAbsoluteWindowsPath(href: string, cwd: string): string {
+  const normalized = href.replace(/^\.[\\/]/, "").replace(/\//g, "\\");
+  if (/^[a-zA-Z]:\\/.test(normalized) || normalized.startsWith("\\\\")) {
+    return normalized;
+  }
+  return `${cwd.replace(/[\\/]$/, "")}\\${normalized}`;
+}
+
 const isSchemeUrl = (href: string) => /^[a-z][a-z0-9+.-]*:/i.test(href);
 
 // A bare <a href> inside markdown navigates the whole webview away from the
@@ -2303,9 +2465,15 @@ function MarkdownLink({
   children,
   distro,
   cwd,
+  connectionMode,
   onLinkError,
   ...props
-}: React.ComponentProps<"a"> & { distro: string; cwd: string; onLinkError: (msg: string) => void }) {
+}: React.ComponentProps<"a"> & {
+  distro: string;
+  cwd: string;
+  connectionMode: "wsl" | "native";
+  onLinkError: (msg: string) => void;
+}) {
   const [menuPos, setMenuPos] = useState<{ x: number; y: number } | null>(null);
   const isFileLink = !!href && !isSchemeUrl(href);
 
@@ -2324,7 +2492,11 @@ function MarkdownLink({
                 await openUrl(href);
               } else {
                 const { openPath } = await import("@tauri-apps/plugin-opener");
-                await openPath(wslPathToUnc(resolveAbsoluteWslPath(href, cwd), distro));
+                await openPath(
+                  connectionMode === "native"
+                    ? resolveAbsoluteWindowsPath(href, cwd)
+                    : wslPathToUnc(resolveAbsoluteWslPath(href, cwd), distro)
+                );
               }
             } catch (err) {
               onLinkError(`リンクを開けませんでした（${href}）: ${err}`);
@@ -2348,7 +2520,13 @@ function MarkdownLink({
                 setMenuPos(null);
                 void (async () => {
                   try {
-                    await invoke("reveal_in_explorer", { distro, path: resolveAbsoluteWslPath(href!, cwd) });
+                    if (connectionMode === "native") {
+                      await invoke("reveal_in_explorer_native", {
+                        path: resolveAbsoluteWindowsPath(href!, cwd),
+                      });
+                    } else {
+                      await invoke("reveal_in_explorer", { distro, path: resolveAbsoluteWslPath(href!, cwd) });
+                    }
                   } catch (err) {
                     onLinkError(`エクスプローラーで開けませんでした（${href}）: ${err}`);
                   }
@@ -2364,10 +2542,15 @@ function MarkdownLink({
   );
 }
 
-function markdownLinkComponents(distro: string, cwd: string, onLinkError: (msg: string) => void) {
+function markdownLinkComponents(
+  distro: string,
+  cwd: string,
+  connectionMode: "wsl" | "native",
+  onLinkError: (msg: string) => void
+) {
   return {
     a: (props: React.ComponentProps<"a">) => (
-      <MarkdownLink {...props} distro={distro} cwd={cwd} onLinkError={onLinkError} />
+      <MarkdownLink {...props} distro={distro} cwd={cwd} connectionMode={connectionMode} onLinkError={onLinkError} />
     ),
   };
 }
@@ -2381,15 +2564,17 @@ const TranscriptItem = memo(function TranscriptItem({
   di,
   distro,
   cwd,
+  connectionMode,
   onLinkError,
 }: {
   di: DisplayItem;
   distro: string;
   cwd: string;
+  connectionMode: "wsl" | "native";
   onLinkError: (msg: string) => void;
 }) {
   const { item, streamingText } = di;
-  const mdComponents = markdownLinkComponents(distro, cwd, onLinkError);
+  const mdComponents = markdownLinkComponents(distro, cwd, connectionMode, onLinkError);
   switch (item.type) {
     case "userMessage": {
       const text = (item as Extract<ThreadItem, { type: "userMessage" }>).content
