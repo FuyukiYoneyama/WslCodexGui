@@ -73,6 +73,18 @@ const DEFAULT_PROJECT_PATH = "/home/user";
 const DEFAULT_MODEL_OVERRIDE = "gpt-5.6-luna";
 const DEFAULT_MODEL_OVERRIDE_LABEL = "GPT-5.6-Luna";
 
+// Pre-connect model choices (model/list needs a live connection, so this is
+// a small curated set rather than the live catalog -- confirmed current via
+// a real model/list probe on 2026-07-27). Any other value (typed pre-connect
+// via the fallback text input, or picked post-connect from the live 🧠
+// picker) still shows up as an extra "(未確認)" option, same pattern as the
+// WSL distro select's fallback.
+const MODEL_PRESETS: { value: string; label: string }[] = [
+  { value: "gpt-5.6-sol", label: "GPT-5.6-Sol" },
+  { value: "gpt-5.6-terra", label: "GPT-5.6-Terra" },
+  { value: "gpt-5.6-luna", label: "GPT-5.6-Luna" },
+];
+
 // thread/start's approvalPolicy, fixed for the lifetime of a thread (cannot
 // be changed on thread/resume). "granular" also exists server-side but is
 // undocumented in `codex --help` and not exposed here.
@@ -318,6 +330,9 @@ export default function App() {
   };
   const [effortPickerOpen, setEffortPickerOpen] = useState(false);
   const [speedPickerOpen, setSpeedPickerOpen] = useState(false);
+  // Toggles the pre-connect モデル field between MODEL_PRESETS' <select> and
+  // a free-text <input> for an ID outside that curated list.
+  const [modelCustomEntry, setModelCustomEntry] = useState(false);
   // What config/read actually reported as the server's currently-effective
   // model_reasoning_effort/service_tier -- distinct from reasoningEffort's
   // own null-ness (which just means "this app isn't overriding it"). Queried
@@ -2076,12 +2091,48 @@ export default function App() {
                   <>
                     <label>
                       モデル
-                      <input
-                        value={modelOverride ?? ""}
-                        onChange={(e) => onModelOverrideInput(e.target.value)}
-                        placeholder={DEFAULT_MODEL_OVERRIDE}
-                        title="turn/startのmodelとして毎ターン送信されます。接続後はフッターの🧠バッジから一覧を見て選べます（推論レベル・速度の対応状況もそちらで確認できます）"
-                      />
+                      {modelCustomEntry ? (
+                        <div className="project-path-row">
+                          <input
+                            value={modelOverride ?? ""}
+                            onChange={(e) => onModelOverrideInput(e.target.value)}
+                            placeholder={DEFAULT_MODEL_OVERRIDE}
+                            title="turn/startのmodelとして毎ターン送信されます"
+                          />
+                          <button
+                            type="button"
+                            className="mini"
+                            onClick={() => setModelCustomEntry(false)}
+                            title="一覧から選ぶ"
+                          >
+                            一覧
+                          </button>
+                        </div>
+                      ) : (
+                        <select
+                          value={modelOverride ?? DEFAULT_MODEL_OVERRIDE}
+                          onChange={(e) => {
+                            if (e.target.value === "__custom__") {
+                              setModelCustomEntry(true);
+                              return;
+                            }
+                            onModelOverrideInput(e.target.value);
+                          }}
+                          title="turn/startのmodelとして毎ターン送信されます。接続後はフッターの🧠バッジから一覧を見て選べます（推論レベル・速度の対応状況もそちらで確認できます）"
+                        >
+                          {!MODEL_PRESETS.some((m) => m.value === (modelOverride ?? DEFAULT_MODEL_OVERRIDE)) && (
+                            <option value={modelOverride ?? DEFAULT_MODEL_OVERRIDE}>
+                              {modelOverrideLabel ?? modelOverride}（未確認）
+                            </option>
+                          )}
+                          {MODEL_PRESETS.map((m) => (
+                            <option key={m.value} value={m.value}>
+                              {m.label}
+                            </option>
+                          ))}
+                          <option value="__custom__">その他（IDを直接入力）</option>
+                        </select>
+                      )}
                     </label>
                     <label>
                       推論レベル
