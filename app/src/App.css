@@ -349,6 +349,7 @@ body { background: var(--bg); color: var(--text); }
 .stderr pre {
   margin: 0; padding: 8px 12px; max-height: 160px; overflow: auto;
   font-size: 10px; color: var(--muted);
+  white-space: pre-wrap; word-break: break-all;
 }
 
 /* codex-path check status under the connect form */

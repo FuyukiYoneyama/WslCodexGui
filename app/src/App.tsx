@@ -155,6 +155,18 @@ interface PastedImage extends ImageContext {
   previewUrl: string;
 }
 
+// codex's stderr uses ANSI color/style codes for its own terminal logging
+// (e.g. `\x1b[31mERROR\x1b[0m`), which render as literal garbage escape
+// sequences in a plain <pre> instead of color. Strip them rather than
+// interpret them -- this log is a diagnostics dump, not a terminal emulator.
+const ANSI_ESCAPE_RE = new RegExp(
+  "[\x1b\x9b][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]",
+  "g"
+);
+function stripAnsi(s: string): string {
+  return s.replace(ANSI_ESCAPE_RE, "");
+}
+
 // `connect`/`rpc_request` reject with a structured RpcFailure object;
 // every other command still rejects with a plain string. This normalizes
 // both into a display string without ever showing "[object Object]".
@@ -993,7 +1005,7 @@ export default function App() {
     unlisteners.push(
       listen<ConnectionTaggedEvent>("codex:stderr", (ev) => {
         if (!isCurrent(ev.payload.connectionId)) return;
-        setStderrLog((prev) => [...prev.slice(-199), ev.payload.line ?? ""]);
+        setStderrLog((prev) => [...prev.slice(-199), stripAnsi(ev.payload.line ?? "")]);
       })
     );
 
