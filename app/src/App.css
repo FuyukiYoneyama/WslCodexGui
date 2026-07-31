@@ -142,8 +142,19 @@ body { background: var(--bg); color: var(--text); }
 }
 
 /* --- chat --- */
-.chat { flex: 1 1 auto; display: flex; flex-direction: column; min-width: 0; }
+.chat { position: relative; flex: 1 1 auto; display: flex; flex-direction: column; min-width: 0; }
 .transcript { flex: 1 1 auto; overflow-y: auto; padding: 16px; }
+/* Floats over the transcript's top-right corner (inside .chat so it does not
+   scroll away); faint until pointed at, so it never competes with the text. */
+.transcript-copy {
+  position: absolute; top: 8px; right: 14px; z-index: 5;
+  padding: 3px 7px; font-size: 13px; line-height: 1.2;
+  background: var(--panel); color: var(--text);
+  border: 1px solid var(--border); border-radius: 6px;
+  cursor: pointer; opacity: 0.55;
+}
+.transcript-copy:hover:not(:disabled) { opacity: 1; background: var(--user-bubble); }
+.transcript-copy:disabled { opacity: 0.25; cursor: default; }
 /* Only while a turn is actually running (activeTurnId) -- reverts to the
    plain background the instant it completes, so idle threads look normal. */
 .transcript.turn-active { background: var(--working-bg); }
@@ -208,9 +219,12 @@ body { background: var(--bg); color: var(--text); }
 @keyframes pulse { 50% { opacity: 0.55; } }
 
 .composer-wrap { position: relative; flex: 0 0 auto; }
-.composer-wrap.drag-over .composer {
-  outline: 2px dashed var(--accent); outline-offset: -2px;
-  background: var(--user-bubble);
+/* Drag feedback covers the whole window because a drop is accepted wherever it
+   lands; pointer-events stay off so the overlay never eats the drop itself. */
+.drag-overlay {
+  position: fixed; inset: 0; z-index: 80; pointer-events: none;
+  border: 3px dashed var(--accent);
+  background: var(--user-bubble); opacity: 0.45;
 }
 
 .model-badge {

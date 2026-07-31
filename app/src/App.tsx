@@ -49,6 +49,8 @@ import { shouldAbortJournal } from "./rpcFailurePolicy";
 import { CONFIRMED_CODEX_CLI_VERSIONS, isConfirmedCodexCliVersion, parseCodexCliVersion } from "./codexVersion";
 import { decideJournalReconciliation } from "./journalReconciliation";
 import { isApprovalMethod } from "./approvalMethods";
+import { formatLinkAddress, splitLineSuffix } from "./linkTarget";
+import { transcriptToText } from "./transcriptCopy";
 import "./App.css";
 
 type ConnState = "disconnected" | "connecting" | "connected" | "disconnecting";
@@ -301,6 +303,8 @@ export default function App() {
   const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
   const [activeTurnId, setActiveTurnId] = useState<string | null>(null);
   const [items, setItems] = useState<DisplayItem[]>([]);
+  // Transient ✅ on the whole-transcript copy button.
+  const [copiedAll, setCopiedAll] = useState(false);
   const [approvals, setApprovals] = useState<ServerRequest[]>([]);
   const [approvalRespondingId, setApprovalRespondingId] = useState<RequestId | null>(null);
   const [input, setInput] = useState("");
@@ -549,36 +553,21 @@ export default function App() {
   }, []);
 
   // Drag-and-drop from Explorer: convert dropped Windows paths to WSL paths
-  // (windows_path_to_wsl) and insert them into the composer. Tauri's OS-level
-  // drag-drop only reports a cursor position, not the DOM target, so we test
-  // that position against the composer's own bounding box.
-  const composerWrapRef = useRef<HTMLDivElement>(null);
+  // (windows_path_to_wsl) and insert them into the composer. A drop anywhere in
+  // the window is accepted (see the "drop" branch below), so the highlight is
+  // the whole window too -- highlighting only the composer suggested a target
+  // the user had to hit, which is not how it behaves.
   const [dragOver, setDragOver] = useState(false);
   useEffect(() => {
     let unlisten: (() => void) | undefined;
     let cancelled = false;
 
-    // event.position is in physical pixels; getBoundingClientRect() is in
-    // logical/CSS pixels, so they only line up 1:1 without DPI scaling.
-    let scaleFactor = 1;
-
-    const isOverComposer = (x: number, y: number) => {
-      const el = composerWrapRef.current;
-      if (!el) return false;
-      const r = el.getBoundingClientRect();
-      const lx = x / scaleFactor;
-      const ly = y / scaleFactor;
-      return lx >= r.left && lx <= r.right && ly >= r.top && ly <= r.bottom;
-    };
-
     (async () => {
-      const { getCurrentWindow } = await import("@tauri-apps/api/window");
-      scaleFactor = await getCurrentWindow().scaleFactor();
       const { getCurrentWebview } = await import("@tauri-apps/api/webview");
       const un = await getCurrentWebview().onDragDropEvent((event) => {
         const p = event.payload;
         if (p.type === "enter" || p.type === "over") {
-          setDragOver(isOverComposer(p.position.x, p.position.y));
+          setDragOver(true);
           return;
         }
         if (p.type === "leave") {
@@ -588,10 +577,9 @@ export default function App() {
         if (p.type === "drop") {
           setDragOver(false);
           // Composer is the only drop target this app has, so accept a drop
-          // anywhere in the window rather than gating on position — the
-          // "enter"/"over" position tracking above is cosmetic (highlight)
-          // only and occasionally disagreed with the drop event's own
-          // position, silently swallowing otherwise-valid drops.
+          // anywhere in the window rather than gating on position — position
+          // gating used to disagree with the drop event's own coordinates and
+          // silently swallowed otherwise-valid drops.
           void (async () => {
             // Native mode: app-server reads plain Windows paths directly, no
             // WSL UNC conversion needed.
@@ -1546,6 +1534,25 @@ export default function App() {
     }
   };
 
+  // Whole-transcript copy (the 📋 button above the transcript). Confirmation is
+  // the button itself flipping to ✅ for a moment -- there is no dialog to show
+  // (see scripts/check-no-native-dialogs.mjs) and a banner would be noisier
+  // than the action deserves.
+  const copyTranscript = async () => {
+    const text = transcriptToText(items);
+    if (!text) {
+      setErrorBanner("コピーできる会話がありません");
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopiedAll(true);
+      window.setTimeout(() => setCopiedAll(false), 1500);
+    } catch (e) {
+      setErrorBanner(`クリップボードへのコピーに失敗しました: ${e}`);
+    }
+  };
+
   const copyLastResponse = async () => {
     const last = [...items].reverse().find((di) => di.item.type === "agentMessage");
     const text = last ? (last.item as Extract<ThreadItem, { type: "agentMessage" }>).text : "";
@@ -2059,6 +2066,10 @@ export default function App() {
   return (
     <div className="app">
 
+      {/* Whole-window drop affordance: a drop is accepted wherever it lands, so
+          the highlight covers the window instead of pointing at the composer. */}
+      {dragOver && <div className="drag-overlay" />}
+
       {errorBanner && (
         <div className="banner" onClick={() => setErrorBanner(null)}>
           {errorBanner}
@@ -2241,6 +2252,16 @@ export default function App() {
 
         {hasEverConnected && (
         <main className="chat">
+          <button
+            type="button"
+            className="transcript-copy"
+            title="この会話の全体をクリップボードにコピー"
+            aria-label="会話全体をコピー"
+            disabled={items.length === 0}
+            onClick={() => void copyTranscript()}
+          >
+            {copiedAll ? "✅" : "📋"}
+          </button>
           <div className={`transcript${activeTurnId ? " turn-active" : ""}`} ref={transcriptRef}>
             {items.map((di) => (
               <TranscriptItem
@@ -2254,7 +2275,7 @@ export default function App() {
             ))}
             {activeTurnId && <div className="working">Codex is working…</div>}
           </div>
-          <div className={`composer-wrap${dragOver ? " drag-over" : ""}`} ref={composerWrapRef}>
+          <div className="composer-wrap">
             {slashOpen && filteredCommands.length > 0 && (
               <ul className="slash-menu">
                 {filteredCommands.map((c, i) => (
@@ -2779,8 +2800,10 @@ const isSchemeUrl = (href: string) => /^[a-z][a-z0-9+.-]*:/i.test(href);
 // Intercept it instead: absolute URLs open in the default browser/app;
 // anything else is treated as a WSL-relative path (codex often links build
 // artifacts this way) and opened via Explorer's \\wsl.localhost UNC form.
-// File links also get a right-click menu to reveal the containing folder
-// instead of opening the file itself.
+// Every link also gets a right-click menu (open, reveal the containing folder,
+// copy the address); file links are resolved through splitLineSuffix first, so
+// codex's `path:line` references open the file instead of failing on a
+// filename that does not exist.
 function MarkdownLink({
   href,
   children,
@@ -2797,6 +2820,40 @@ function MarkdownLink({
 }) {
   const [menuPos, setMenuPos] = useState<{ x: number; y: number } | null>(null);
   const isFileLink = !!href && !isSchemeUrl(href);
+  const target = isFileLink ? splitLineSuffix(href!) : null;
+
+  // The path without the line suffix, in whichever form this connection mode
+  // speaks: Windows paths natively, WSL paths through the \\wsl.localhost UNC
+  // share for anything Explorer has to touch.
+  const absolutePath = () =>
+    connectionMode === "native"
+      ? resolveAbsoluteWindowsPath(target!.path, cwd)
+      : resolveAbsoluteWslPath(target!.path, cwd);
+
+  const openLink = () => {
+    if (!href) return;
+    void (async () => {
+      try {
+        if (!isFileLink) {
+          const { openUrl } = await import("@tauri-apps/plugin-opener");
+          await openUrl(href);
+        } else {
+          const { openPath } = await import("@tauri-apps/plugin-opener");
+          await openPath(connectionMode === "native" ? absolutePath() : wslPathToUnc(absolutePath(), distro));
+        }
+      } catch (err) {
+        onLinkError(`リンクを開けませんでした（${href}）: ${err}`);
+      }
+    })();
+  };
+
+  const copyAddress = () => {
+    if (!href) return;
+    const address = isFileLink ? formatLinkAddress(absolutePath(), target!.line) : href;
+    void navigator.clipboard
+      .writeText(address)
+      .catch((err) => onLinkError(`リンクアドレスをコピーできませんでした（${href}）: ${err}`));
+  };
 
   return (
     <>
@@ -2805,27 +2862,10 @@ function MarkdownLink({
         href={href}
         onClick={(e) => {
           e.preventDefault();
-          if (!href) return;
-          void (async () => {
-            try {
-              if (isSchemeUrl(href)) {
-                const { openUrl } = await import("@tauri-apps/plugin-opener");
-                await openUrl(href);
-              } else {
-                const { openPath } = await import("@tauri-apps/plugin-opener");
-                await openPath(
-                  connectionMode === "native"
-                    ? resolveAbsoluteWindowsPath(href, cwd)
-                    : wslPathToUnc(resolveAbsoluteWslPath(href, cwd), distro)
-                );
-              }
-            } catch (err) {
-              onLinkError(`リンクを開けませんでした（${href}）: ${err}`);
-            }
-          })();
+          openLink();
         }}
         onContextMenu={(e) => {
-          if (!isFileLink) return;
+          if (!href) return;
           e.preventDefault();
           setMenuPos({ x: e.clientX, y: e.clientY });
         }}
@@ -2839,22 +2879,38 @@ function MarkdownLink({
             <button
               onClick={() => {
                 setMenuPos(null);
-                void (async () => {
-                  try {
-                    if (connectionMode === "native") {
-                      await invoke("reveal_in_explorer_native", {
-                        path: resolveAbsoluteWindowsPath(href!, cwd),
-                      });
-                    } else {
-                      await invoke("reveal_in_explorer", { distro, path: resolveAbsoluteWslPath(href!, cwd) });
-                    }
-                  } catch (err) {
-                    onLinkError(`エクスプローラーで開けませんでした（${href}）: ${err}`);
-                  }
-                })();
+                openLink();
               }}
             >
-              エクスプローラーでリンク先のフォルダを開く
+              {isFileLink ? "リンク先を開く" : "リンクを開く"}
+            </button>
+            {isFileLink && (
+              <button
+                onClick={() => {
+                  setMenuPos(null);
+                  void (async () => {
+                    try {
+                      if (connectionMode === "native") {
+                        await invoke("reveal_in_explorer_native", { path: absolutePath() });
+                      } else {
+                        await invoke("reveal_in_explorer", { distro, path: absolutePath() });
+                      }
+                    } catch (err) {
+                      onLinkError(`エクスプローラーで開けませんでした（${href}）: ${err}`);
+                    }
+                  })();
+                }}
+              >
+                エクスプローラーでリンク先のフォルダを開く
+              </button>
+            )}
+            <button
+              onClick={() => {
+                setMenuPos(null);
+                copyAddress();
+              }}
+            >
+              リンクアドレスをコピー
             </button>
           </div>
         </>
