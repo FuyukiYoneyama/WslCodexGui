@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { transcriptToText } from "./transcriptCopy.ts";
+import { itemToText, transcriptToText } from "./transcriptCopy.ts";
 
 test("user and agent messages are labelled and separated by a blank line", () => {
   const text = transcriptToText([
@@ -35,6 +35,29 @@ test("reasoning, command output and file changes are included", () => {
     text,
     "## 思考\nまず調べる\n\n## コマンド\n$ ls\na.txt\nexit 0\n\n## ファイル変更（completed）\n- src/App.tsx",
   );
+});
+
+test("a single message copies its body without the heading", () => {
+  assert.equal(
+    itemToText({ item: { type: "userMessage", id: "u1", content: [{ type: "text", text: "こんにちは" }] } }),
+    "こんにちは",
+  );
+  assert.equal(itemToText({ item: { type: "agentMessage", id: "a1", text: "" }, streamingText: "途中まで" }), "途中まで");
+  assert.equal(
+    itemToText({
+      item: {
+        type: "commandExecution",
+        id: "c1",
+        command: "ls",
+        cwd: "/tmp",
+        status: "completed",
+        aggregatedOutput: "a.txt",
+        exitCode: 0,
+      },
+    }),
+    "$ ls\na.txt\nexit 0",
+  );
+  assert.equal(itemToText({ item: { type: "somethingNew", id: "x1" } }), "");
 });
 
 test("empty messages and unknown item kinds are skipped", () => {

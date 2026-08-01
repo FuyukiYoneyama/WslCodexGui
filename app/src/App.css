@@ -159,11 +159,23 @@ body { background: var(--bg); color: var(--text); }
    plain background the instant it completes, so idle threads look normal. */
 .transcript.turn-active { background: var(--working-bg); }
 .msg {
+  position: relative;
   max-width: 780px; margin: 0 auto 10px;
   padding: 9px 13px; border-radius: 8px;
   word-break: break-word;
   background: var(--agent-bubble); border: 1px solid var(--border);
 }
+/* Per-message copy button. Hidden (and click-through) until the message is
+   hovered, so it never covers text the user is only reading. */
+.msg-copy {
+  position: absolute; top: 4px; right: 4px; z-index: 2;
+  padding: 1px 5px; font-size: 11px; line-height: 1.4;
+  background: var(--panel); color: var(--text);
+  border: 1px solid var(--border); border-radius: 5px;
+  cursor: pointer; opacity: 0; pointer-events: none;
+}
+.msg:hover .msg-copy { opacity: 0.75; pointer-events: auto; }
+.msg-copy:hover, .msg-copy:focus-visible { opacity: 1; pointer-events: auto; background: var(--user-bubble); }
 .msg.user { background: var(--user-bubble); border-color: transparent; white-space: pre-wrap; }
 .msg.reasoning { font-size: 12px; color: var(--muted); font-style: italic; }
 .msg.command code { display: block; font-family: Consolas, monospace; font-size: 12px; }

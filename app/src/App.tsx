@@ -50,7 +50,7 @@ import { CONFIRMED_CODEX_CLI_VERSIONS, isConfirmedCodexCliVersion, parseCodexCli
 import { decideJournalReconciliation } from "./journalReconciliation";
 import { isApprovalMethod } from "./approvalMethods";
 import { formatLinkAddress, splitLineSuffix } from "./linkTarget";
-import { transcriptToText } from "./transcriptCopy";
+import { itemToText, transcriptToText } from "./transcriptCopy";
 import "./App.css";
 
 type ConnState = "disconnected" | "connecting" | "connected" | "disconnecting";
@@ -2271,6 +2271,7 @@ export default function App() {
                 cwd={projectCwd}
                 connectionMode={connectionMode}
                 onLinkError={setErrorBanner}
+                onError={setErrorBanner}
               />
             ))}
             {activeTurnId && <div className="working">Codex is working…</div>}
@@ -2932,6 +2933,49 @@ function markdownLinkComponents(
   };
 }
 
+// Every message carries its own copy button, revealed on hover so it does not
+// clutter the transcript: the 📋 above the transcript copies the whole
+// conversation, this one copies just this message. What it copies is
+// itemToText() -- the same serializer the whole-conversation copy uses -- so
+// the two never disagree about what a message says.
+function MessageBubble({
+  className,
+  copyText,
+  onError,
+  children,
+}: {
+  className: string;
+  copyText: string;
+  onError: (msg: string) => void;
+  children: React.ReactNode;
+}) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <div className={`msg ${className}`}>
+      {copyText && (
+        <button
+          type="button"
+          className="msg-copy"
+          title="このメッセージをコピー"
+          aria-label="このメッセージをコピー"
+          onClick={() => {
+            void navigator.clipboard.writeText(copyText).then(
+              () => {
+                setCopied(true);
+                window.setTimeout(() => setCopied(false), 1200);
+              },
+              (e) => onError(`クリップボードへのコピーに失敗しました: ${e}`)
+            );
+          }}
+        >
+          {copied ? "✅" : "📋"}
+        </button>
+      )}
+      {children}
+    </div>
+  );
+}
+
 // Memoized: without this, every keystroke in the composer re-renders the
 // entire App component, which re-renders every already-settled message
 // (each running its own Markdown parse) even though nothing about them
@@ -2943,45 +2987,45 @@ const TranscriptItem = memo(function TranscriptItem({
   cwd,
   connectionMode,
   onLinkError,
+  onError,
 }: {
   di: DisplayItem;
   distro: string;
   cwd: string;
   connectionMode: "wsl" | "native";
   onLinkError: (msg: string) => void;
+  onError: (msg: string) => void;
 }) {
   const { item, streamingText } = di;
   const mdComponents = markdownLinkComponents(distro, cwd, connectionMode, onLinkError);
+  const copyText = itemToText(di);
   switch (item.type) {
     case "userMessage": {
-      const text = (item as Extract<ThreadItem, { type: "userMessage" }>).content
-        .map((c) => c.text ?? "")
-        .join("");
-      return <div className="msg user">{text}</div>;
+      return (
+        <MessageBubble className="user" copyText={copyText} onError={onError}>
+          {copyText}
+        </MessageBubble>
+      );
     }
     case "agentMessage": {
-      const it = item as Extract<ThreadItem, { type: "agentMessage" }>;
-      const text = it.text || streamingText || "";
       return (
-        <div className="msg agent md">
-          <ReactMarkdown remarkPlugins={[remarkGfm]} components={mdComponents}>{text}</ReactMarkdown>
-        </div>
+        <MessageBubble className="agent md" copyText={copyText} onError={onError}>
+          <ReactMarkdown remarkPlugins={[remarkGfm]} components={mdComponents}>{copyText}</ReactMarkdown>
+        </MessageBubble>
       );
     }
     case "reasoning": {
-      const it = item as Extract<ThreadItem, { type: "reasoning" }>;
-      const summary = it.summary?.join("\n") ?? "";
-      if (!summary) return null;
+      if (!copyText) return null;
       return (
-        <div className="msg reasoning md">
-          <ReactMarkdown remarkPlugins={[remarkGfm]} components={mdComponents}>{summary}</ReactMarkdown>
-        </div>
+        <MessageBubble className="reasoning md" copyText={copyText} onError={onError}>
+          <ReactMarkdown remarkPlugins={[remarkGfm]} components={mdComponents}>{copyText}</ReactMarkdown>
+        </MessageBubble>
       );
     }
     case "commandExecution": {
       const it = item as Extract<ThreadItem, { type: "commandExecution" }>;
       return (
-        <div className="msg command">
+        <MessageBubble className="command" copyText={copyText} onError={onError}>
           <code>$ {it.command}</code>
           {(it.aggregatedOutput || streamingText) && (
             <pre>{it.aggregatedOutput ?? streamingText}</pre>
@@ -2989,20 +3033,20 @@ const TranscriptItem = memo(function TranscriptItem({
           {it.exitCode !== null && it.exitCode !== undefined && (
             <span className={`exit ${it.exitCode === 0 ? "ok" : "err"}`}>exit {it.exitCode}</span>
           )}
-        </div>
+        </MessageBubble>
       );
     }
     case "fileChange": {
       const it = item as Extract<ThreadItem, { type: "fileChange" }>;
       return (
-        <div className="msg filechange">
+        <MessageBubble className="filechange" copyText={copyText} onError={onError}>
           <strong>File changes ({it.status})</strong>
           <ul>
             {it.changes?.map((c, i) => (
               <li key={i}>{typeof c.path === "string" ? c.path : JSON.stringify(c)}</li>
             ))}
           </ul>
-        </div>
+        </MessageBubble>
       );
     }
     default:
