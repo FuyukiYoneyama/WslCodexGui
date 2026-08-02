@@ -54,6 +54,7 @@ import { isApprovalMethod } from "./approvalMethods";
 import { formatLinkAddress, splitLineSuffix } from "./linkTarget";
 import { forcedEffortForModel } from "./modelEffort";
 import { IDLE_POLL_INTERVAL_MS, inputDetected, shouldNotifyOnTurnEnd } from "./idleNotice";
+import { formatElapsed } from "./formatElapsed";
 import { itemToText, transcriptToText } from "./transcriptCopy";
 import {
   appendSummaryDelta,
@@ -469,6 +470,9 @@ export default function App() {
   const pasteGenerationRef = useRef(0);
   const imagesAwaitingTurnRef = useRef<PastedImage[]>([]);
   const turnImagesRef = useRef<Map<string, PastedImage[]>>(new Map());
+  // Elapsed time display while a turn runs. Recorded at turn/started.
+  const turnStartTimeRef = useRef<number | null>(null);
+  const [elapsedTime, setElapsedTime] = useState(0);
 
   // Tags the Connection currently considered "live". Every Rust-emitted
   // event carries connectionId; events from a Connection we've already
@@ -544,6 +548,21 @@ export default function App() {
   // see the current flashing state, and nothing here needs to re-render.
   const flashingRef = useRef(false);
   const flashPollRef = useRef<number | null>(null);
+
+  // Update elapsed time while a turn is running. Timer runs every 100ms
+  // (tight enough for smooth display, loose enough to not spam setState).
+  useEffect(() => {
+    if (!activeTurnId || !turnStartTimeRef.current) {
+      setElapsedTime(0);
+      return;
+    }
+    const interval = window.setInterval(() => {
+      if (turnStartTimeRef.current) {
+        setElapsedTime(Date.now() - turnStartTimeRef.current);
+      }
+    }, 100);
+    return () => window.clearInterval(interval);
+  }, [activeTurnId]);
 
   const stopFlashing = useCallback(() => {
     if (flashPollRef.current !== null) {
@@ -984,6 +1003,7 @@ export default function App() {
             const p = parseOrReport(TurnStartedNotificationSchema, params, "turn/started", setErrorBanner);
             if (!p) break;
             setActiveTurnId(p.turn.id);
+            turnStartTimeRef.current = Date.now();
             setLiveReasoning(null); // the pane belongs to one turn only
             stopFlashing(); // a previous turn's notice is stale once work resumes
             journalMarkStarted(p.threadId, p.turn.id);
@@ -993,6 +1013,7 @@ export default function App() {
             const p = parseOrReport(TurnCompletedNotificationSchema, params, "turn/completed", setErrorBanner);
             if (!p) break;
             setActiveTurnId(null);
+            turnStartTimeRef.current = null;
             setLiveReasoning(null); // the transcript's reasoning item takes over
             if (p.turn.status === "failed") {
               setErrorBanner(`Turn failed: ${JSON.stringify((p.turn as unknown as TurnCompletedNotification["turn"]).error)}`);
@@ -2810,8 +2831,10 @@ export default function App() {
               : connState}
         </span>
         <span>{connectionMode === "native" ? "Windows-native" : `WSL: ${distro}`}</span>
-        {initInfo && <span>{initInfo.userAgent.split(" ")[0]}</span>}
-        {activeThreadId && <span>Thread: {activeThreadId.slice(0, 13)}…</span>}
+        {initInfo && <span>CLI: {initInfo.userAgent.split(" ")[0]}</span>}
+        {activeThreadId && (
+          <span title={activeThreadId}>Thread: {activeThreadId.slice(0, 19)}…</span>
+        )}
         {provider === "ollama" && connState === "connected" && (
           <span className="model-footer">🦙 {ollamaModel}</span>
         )}
@@ -2828,6 +2851,9 @@ export default function App() {
               <button className="mini" onClick={clearModelOverride} title="既定モデルに戻す">
                 ×
               </button>
+            )}
+            {activeTurnId && (
+              <span title="ターン経過時間">⏱ {formatElapsed(elapsedTime)}</span>
             )}
             <button
               className="model-footer-badge"

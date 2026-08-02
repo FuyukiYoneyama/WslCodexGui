@@ -51,6 +51,11 @@ body { background: var(--bg); color: var(--text); }
   background: var(--danger); color: #fff; border: none;
   padding: 3px 12px; border-radius: 4px; cursor: pointer;
 }
+/* Elapsed time display during turn execution. */
+.statusbar span[title="ターン経過時間"] {
+  font-family: monospace; font-size: 13px;
+  color: var(--text); font-weight: 500;
+}
 .usage-badge {
   display: flex; gap: 6px; background: transparent; border: none;
   cursor: pointer; padding: 0; color: var(--muted);
