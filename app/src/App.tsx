@@ -480,6 +480,11 @@ export default function App() {
   // connect() already succeeded) are ignored instead of corrupting state.
   const connectionIdRef = useRef<string | null>(null);
 
+  // Set window title with GUI version
+  useEffect(() => {
+    document.title = "WslCodexGui v0.5.17";
+  }, []);
+
   const deletePastedImageFile = useCallback((image: Pick<PastedImage, "distro" | "wslPath">) => {
     void invoke("delete_pasted_image", {
       connectionMode: connectionModeRef.current,
@@ -2831,7 +2836,7 @@ export default function App() {
               : connState}
         </span>
         <span>{connectionMode === "native" ? "Windows-native" : `WSL: ${distro}`}</span>
-        {initInfo && <span>CLI: {initInfo.userAgent.split(" ")[0]}</span>}
+        {initInfo && <span>Codex CLI: {initInfo.userAgent.split("/")[1] || initInfo.userAgent}</span>}
         {activeThreadId && (
           <span title={activeThreadId}>Thread: {activeThreadId.slice(0, 19)}…</span>
         )}
