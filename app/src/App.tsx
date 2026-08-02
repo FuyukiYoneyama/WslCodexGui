@@ -2836,7 +2836,7 @@ export default function App() {
               : connState}
         </span>
         <span>{connectionMode === "native" ? "Windows-native" : `WSL: ${distro}`}</span>
-        {initInfo && <span>Codex CLI: {initInfo.userAgent.split("/")[1] || initInfo.userAgent}</span>}
+        {initInfo && <span>Codex CLI: {initInfo.userAgent.split("/")[1]?.split(" ")[0] || initInfo.userAgent}</span>}
         {activeThreadId && (
           <span title={activeThreadId}>Thread: {activeThreadId.slice(0, 19)}…</span>
         )}
