@@ -469,9 +469,23 @@ export default function App() {
   // connect() already succeeded) are ignored instead of corrupting state.
   const connectionIdRef = useRef<string | null>(null);
 
-  // Set window title with GUI version
+  // Native window titlebar (not document.title, which only affects the
+  // in-page <title> and has no effect on the OS chrome) shows the GUI
+  // version so it's visible without digging into the footer.
   useEffect(() => {
-    document.title = "WslCodexGui v0.5.17";
+    void (async () => {
+      try {
+        const [{ getVersion }, { getCurrentWindow }] = await Promise.all([
+          import("@tauri-apps/api/app"),
+          import("@tauri-apps/api/window"),
+        ]);
+        const version = await getVersion();
+        await getCurrentWindow().setTitle(`WSL Codex GUI v${version}`);
+      } catch {
+        // dev server without the Tauri runtime, etc.; titlebar keeps the
+        // static fallback from tauri.conf.json
+      }
+    })();
   }, []);
 
   const deletePastedImageFile = useCallback((image: Pick<PastedImage, "distro" | "wslPath">) => {
