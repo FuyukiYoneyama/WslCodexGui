@@ -6,6 +6,7 @@
   "permissions": [
     "core:default",
     "core:window:allow-request-user-attention",
+    "core:window:allow-set-title",
     "opener:allow-open-url",
     "opener:allow-default-urls",
     "dialog:allow-open"

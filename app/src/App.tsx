@@ -479,6 +479,12 @@ export default function App() {
   // Native window titlebar (not document.title, which only affects the
   // in-page <title> and has no effect on the OS chrome) shows the GUI
   // version so it's visible without digging into the footer.
+  //
+  // Needs `core:window:allow-set-title` in capabilities/default.json --
+  // setTitle is not part of core:default, so without it this rejects and the
+  // titlebar silently keeps tauri.conf.json's static name. Verified by
+  // reading the real title back with PowerShell's MainWindowTitle, which is
+  // the only check that catches this (tsc and the unit tests cannot).
   useEffect(() => {
     void (async () => {
       try {
@@ -488,9 +494,12 @@ export default function App() {
         ]);
         const version = await getVersion();
         await getCurrentWindow().setTitle(`WSL Codex GUI v${version}`);
-      } catch {
-        // dev server without the Tauri runtime, etc.; titlebar keeps the
-        // static fallback from tauri.conf.json
+      } catch (e) {
+        // Expected under the dev server (no Tauri runtime): the titlebar just
+        // keeps the static fallback. Anywhere else this is a real failure, so
+        // don't swallow it completely -- a silent catch here is what hid the
+        // missing capability above through two builds.
+        console.error("failed to set the window title", e);
       }
     })();
   }, []);
