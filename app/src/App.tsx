@@ -128,6 +128,12 @@ const REASONING_EFFORTS: { value: ReasoningEffort; label: string }[] = [
   { value: "max", label: "最大" },
 ];
 
+// How often the footer's usage badge re-reads account/rateLimits/read while
+// a turn is running. Slow on purpose: the quota moves in whole percent
+// points over minutes, so anything tighter would add requests without
+// changing what the badge shows.
+const USAGE_POLL_INTERVAL_MS = 30_000;
+
 // Reasoning level an Ollama session falls back to, replacing whatever
 // ~/.codex/config.toml holds (see the connect-time override below). "high"
 // is the nearest level Ollama accepts to this environment's configured
@@ -997,6 +1003,24 @@ export default function App() {
       // connection may be mid-teardown etc.; footer badge just stays stale
     }
   }, []);
+
+  // Refresh the usage badge *while* a turn runs, not only once it finishes.
+  // The badge is otherwise fetched on connect, on turn/completed and when its
+  // own panel is opened, so a long turn showed the pre-turn figure the whole
+  // time and then jumped at the end -- exactly when watching the quota drain
+  // is the point. Deliberately scoped to a running turn: nothing consumes
+  // quota while idle, so polling then would be pure traffic. Ollama has no
+  // rate-limit concept (its badge is hidden, and account/rateLimits/read is
+  // not even called on connect there), so it is skipped.
+  //
+  // Declared after fetchUsage on purpose: naming it in a dependency array
+  // above its own `const` would be read during render, i.e. in the temporal
+  // dead zone.
+  useEffect(() => {
+    if (!activeTurnId || provider === "ollama") return;
+    const interval = window.setInterval(() => void fetchUsage(), USAGE_POLL_INTERVAL_MS);
+    return () => window.clearInterval(interval);
+  }, [activeTurnId, provider, fetchUsage]);
 
   // --- event wiring ---
   useEffect(() => {
@@ -2851,71 +2875,79 @@ export default function App() {
         </details>
       )}
 
-      <footer className="statusbar">
-        <span className={`dot ${connState}`} />
-        <span>
-          {connState === "connected"
-            ? "Codex server connected (owned)"
-            : connState === "disconnecting"
-              ? "切断中…"
-              : connState}
-        </span>
-        <span>{connectionMode === "native" ? "Windows-native" : `WSL: ${distro}`}</span>
-        {initInfo && <span>Codex CLI: {initInfo.userAgent.split("/")[1]?.split(" ")[0] || initInfo.userAgent}</span>}
-        {activeThreadId && (
-          <span title={activeThreadId}>Thread: {activeThreadId.slice(0, 19)}…</span>
-        )}
-        {provider === "ollama" && connState === "connected" && (
-          <span className="model-footer">🦙 {ollamaModel}</span>
-        )}
-        {provider !== "ollama" && connState === "connected" && (
-          <span className="model-footer">
-            <button
-              className="model-footer-badge"
-              onClick={() => void openModelPicker()}
-              title="モデルを変更"
-            >
-              🧠 {modelOverrideLabel ?? defaultModelLabel ?? "モデル"}
-            </button>
-            {modelOverride && (
-              <button className="mini" onClick={clearModelOverride} title="既定モデルに戻す">
-                ×
+      {/* Only rendered while connected: the bar exists to describe a live
+          session, so its own presence is the connection indicator and the
+          separate dot + "Codex server connected (owned)" text it used to
+          carry were saying the same thing twice. Disconnecting still shows
+          "切断中…" on the sidebar's own button, so no state is lost here.
+
+          Order is deliberate (what the current turn is spending, then the
+          fixed environment it runs in): model, reasoning level, speed,
+          quota, elapsed -- then WSL, CLI, thread. Stop keeps its
+          margin-left:auto so it stays pinned right regardless. */}
+      {connState === "connected" && (
+        <footer className="statusbar">
+          {provider === "ollama" ? (
+            <span className="model-footer">🦙 {ollamaModel}</span>
+          ) : (
+            <span className="model-footer">
+              <button
+                className="model-footer-badge"
+                onClick={() => void openModelPicker()}
+                title="モデルを変更"
+              >
+                🧠 {modelOverrideLabel ?? defaultModelLabel ?? "モデル"}
               </button>
-            )}
-            {activeTurnId && (
-              <span title="ターン経過時間">⏱ {formatElapsed(elapsedTime)}</span>
-            )}
-            <button
-              className="model-footer-badge"
-              onClick={openEffortPicker}
-              title="推論レベルを変更（次のメッセージから反映）"
-            >
-              🎚 {REASONING_EFFORTS.find((r) => r.value === reasoningEffort)?.label ?? "指定なし"}
+              {modelOverride && (
+                <button className="mini" onClick={clearModelOverride} title="既定モデルに戻す">
+                  ×
+                </button>
+              )}
+            </span>
+          )}
+          {/* Reasoning level / speed / quota are OpenAI-account concepts with
+              no Ollama equivalent (see turnModelFields.ts), so they stay
+              hidden there rather than showing an inert "指定なし". */}
+          {provider !== "ollama" && (
+            <>
+              <button
+                className="model-footer-badge"
+                onClick={openEffortPicker}
+                title="推論レベルを変更（次のメッセージから反映）"
+              >
+                🎚 {REASONING_EFFORTS.find((r) => r.value === reasoningEffort)?.label ?? "指定なし"}
+              </button>
+              <button
+                className="model-footer-badge"
+                onClick={openSpeedPicker}
+                title="速度を変更（次のメッセージから反映）"
+              >
+                🚀 {SERVICE_TIERS.find((s) => s.value === serviceTier)?.label ?? "指定なし"}
+              </button>
+            </>
+          )}
+          {provider !== "ollama" && usagePanel && (
+            <button className="usage-badge" onClick={() => void openUsagePanel()} title={usageResetTooltip(usagePanel)}>
+              <UsagePill label="P" pct={usagePanel.rateLimits.primary?.usedPercent} />
+              {usagePanel.rateLimits.secondary && (
+                <UsagePill label="S" pct={usagePanel.rateLimits.secondary?.usedPercent} />
+              )}
+              <CreditPill rateLimits={usagePanel.rateLimits} />
             </button>
-            <button
-              className="model-footer-badge"
-              onClick={openSpeedPicker}
-              title="速度を変更（次のメッセージから反映）"
-            >
-              🚀 {SERVICE_TIERS.find((s) => s.value === serviceTier)?.label ?? "指定なし"}
+          )}
+          {activeTurnId && <span title="ターン経過時間">⏱ {formatElapsed(elapsedTime)}</span>}
+          <span>{connectionMode === "native" ? "Windows-native" : `WSL: ${distro}`}</span>
+          {initInfo && <span>Codex CLI: {initInfo.userAgent.split("/")[1]?.split(" ")[0] || initInfo.userAgent}</span>}
+          {activeThreadId && (
+            <span title={activeThreadId}>Thread: {activeThreadId.slice(0, 19)}…</span>
+          )}
+          {activeTurnId && (
+            <button className="stop" onClick={stop}>
+              ■ Stop
             </button>
-          </span>
-        )}
-        {provider !== "ollama" && usagePanel && (
-          <button className="usage-badge" onClick={() => void openUsagePanel()} title={usageResetTooltip(usagePanel)}>
-            <UsagePill label="P" pct={usagePanel.rateLimits.primary?.usedPercent} />
-            {usagePanel.rateLimits.secondary && (
-              <UsagePill label="S" pct={usagePanel.rateLimits.secondary?.usedPercent} />
-            )}
-            <CreditPill rateLimits={usagePanel.rateLimits} />
-          </button>
-        )}
-        {activeTurnId && (
-          <button className="stop" onClick={stop}>
-            ■ Stop
-          </button>
-        )}
-      </footer>
+          )}
+        </footer>
+      )}
     </div>
   );
 }
