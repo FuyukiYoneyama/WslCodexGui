@@ -53,6 +53,7 @@ import { decideJournalReconciliation } from "./journalReconciliation";
 import { isApprovalMethod } from "./approvalMethods";
 import { formatLinkAddress, splitLineSuffix } from "./linkTarget";
 import { forcedEffortForModel } from "./modelEffort";
+import { turnModelFields } from "./turnModelFields";
 import { IDLE_POLL_INTERVAL_MS, inputDetected, shouldNotifyOnTurnEnd } from "./idleNotice";
 import { formatElapsed } from "./formatElapsed";
 import { itemToText, transcriptToText } from "./transcriptCopy";
@@ -126,6 +127,12 @@ const REASONING_EFFORTS: { value: ReasoningEffort; label: string }[] = [
   { value: "xhigh", label: "非常に高い" },
   { value: "max", label: "最大" },
 ];
+
+// Reasoning level an Ollama session falls back to, replacing whatever
+// ~/.codex/config.toml holds (see the connect-time override below). "high"
+// is the nearest level Ollama accepts to this environment's configured
+// "xhigh", which sits between "high" and "max".
+const OLLAMA_DEFAULT_EFFORT: ReasoningEffort = "high";
 
 // turn/start's `summary` ("auto" | "concise" | "detailed" | "none"), sent on
 // every turn like effort/serviceTier. Not a user setting: without it, this
@@ -1198,6 +1205,15 @@ export default function App() {
             "model_provider=ollama",
             ...(ollamaModel.trim() ? [`model=${ollamaModel.trim()}`] : []),
             ...(ollamaContextWindow.trim() ? [`model_context_window=${ollamaContextWindow.trim()}`] : []),
+            // Ollama rejects "xhigh" outright ("invalid reasoning value"),
+            // and ~/.codex/config.toml's model_reasoning_effort applies to
+            // this session whenever the footer's level is 指定なし -- so a
+            // config.toml written for OpenAI failed every Ollama turn before
+            // any of it reached the model (reproduced with a bare
+            // `codex exec -c model_provider=ollama` on 2026-08-02). Pin a
+            // level Ollama accepts; picking one in the footer still wins,
+            // since that travels per-turn on turn/start.
+            `model_reasoning_effort=${OLLAMA_DEFAULT_EFFORT}`,
           ]
         : [];
     setConnState("connecting");
@@ -1947,9 +1963,7 @@ export default function App() {
             ...images.map((img) => ({ type: "localImage", path: img.wslPath })),
             ...(text ? [{ type: "text", text, text_elements: [] }] : []),
           ],
-          ...(modelOverride ? { model: modelOverride } : {}),
-          ...(reasoningEffort ? { effort: reasoningEffort } : {}),
-          ...(serviceTier ? { serviceTier } : {}),
+          ...turnModelFields(provider, modelOverride, reasoningEffort, serviceTier),
           summary: REASONING_SUMMARY,
         },
       });
