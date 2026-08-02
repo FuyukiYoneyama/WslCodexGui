@@ -473,9 +473,12 @@ export default function App() {
   const pasteGenerationRef = useRef(0);
   const imagesAwaitingTurnRef = useRef<PastedImage[]>([]);
   const turnImagesRef = useRef<Map<string, PastedImage[]>>(new Map());
-  // Elapsed time display while a turn runs. Recorded at turn/started.
+  // Turn duration. Started at turn/started, frozen at turn/completed and left
+  // on screen afterwards -- it used to vanish the instant work finished,
+  // which is exactly when you want to read it. null means "nothing to show":
+  // cleared by the next send, a thread switch, or a disconnect.
   const turnStartTimeRef = useRef<number | null>(null);
-  const [elapsedTime, setElapsedTime] = useState(0);
+  const [elapsedTime, setElapsedTime] = useState<number | null>(null);
 
   // Tags the Connection currently considered "live". Every Rust-emitted
   // event carries connectionId; events from a Connection we've already
@@ -580,13 +583,14 @@ export default function App() {
   const flashingRef = useRef(false);
   const flashPollRef = useRef<number | null>(null);
 
-  // Update elapsed time while a turn is running. Timer runs every 100ms
-  // (tight enough for smooth display, loose enough to not spam setState).
+  // Tick while a turn is running, every 100ms (tight enough for smooth
+  // display, loose enough to not spam setState). Deliberately does *not*
+  // reset on the way out: turn/completed freezes the final figure and it
+  // stays until something makes it stale. A turn adopted from thread/resume
+  // has no start time (its turn/started predates this connection), so there
+  // is nothing to count and the display stays empty.
   useEffect(() => {
-    if (!activeTurnId || !turnStartTimeRef.current) {
-      setElapsedTime(0);
-      return;
-    }
+    if (!activeTurnId || !turnStartTimeRef.current) return;
     const interval = window.setInterval(() => {
       if (turnStartTimeRef.current) {
         setElapsedTime(Date.now() - turnStartTimeRef.current);
@@ -594,6 +598,11 @@ export default function App() {
     }, 100);
     return () => window.clearInterval(interval);
   }, [activeTurnId]);
+
+  // Switching threads makes the previous thread's timing meaningless.
+  useEffect(() => {
+    setElapsedTime(null);
+  }, [activeThreadId]);
 
   const stopFlashing = useCallback(() => {
     if (flashPollRef.current !== null) {
@@ -1062,6 +1071,11 @@ export default function App() {
             const p = parseOrReport(TurnCompletedNotificationSchema, params, "turn/completed", setErrorBanner);
             if (!p) break;
             setActiveTurnId(null);
+            // Freeze the exact duration here rather than keeping whatever the
+            // 100ms ticker last wrote, which can be that much short.
+            if (turnStartTimeRef.current) {
+              setElapsedTime(Date.now() - turnStartTimeRef.current);
+            }
             turnStartTimeRef.current = null;
             setLiveReasoning(null); // the transcript's reasoning item takes over
             if (p.turn.status === "failed") {
@@ -1193,6 +1207,8 @@ export default function App() {
         connectionIdRef.current = null;
         setConnState("disconnected");
         setActiveTurnId(null);
+        turnStartTimeRef.current = null;
+        setElapsedTime(null);
         setLiveReasoning(null);
         discardPastedImages();
         discardSentImages();
@@ -1315,6 +1331,8 @@ export default function App() {
       setConnState("disconnected");
       setActiveThreadId(null);
       setActiveTurnId(null);
+      turnStartTimeRef.current = null;
+      setElapsedTime(null);
       setItems([]);
       setApprovals([]);
       setThreadApprovalPolicies({});
@@ -1982,6 +2000,10 @@ export default function App() {
     pastedImagesRef.current = [];
     for (const img of images) URL.revokeObjectURL(img.previewUrl);
     setErrorBanner(null);
+    // The previous turn's frozen duration stops being the answer to "how long
+    // is this taking" the moment a new send goes out -- clear it here rather
+    // than at turn/started, so it does not linger through the round trip.
+    setElapsedTime(null);
     // N-22: prepare-before-send so a crash between here and turn/started
     // still leaves a record that this thread had a turn in flight.
     const requestId = crypto.randomUUID();
@@ -2936,7 +2958,14 @@ export default function App() {
               <CreditPill rateLimits={usagePanel.rateLimits} />
             </button>
           )}
-          {activeTurnId && <span title="ターン経過時間">⏱ {formatElapsed(elapsedTime)}</span>}
+          {elapsedTime !== null && (
+            <span
+              className={`elapsed ${activeTurnId ? "" : "done"}`}
+              title={activeTurnId ? "ターン経過時間" : "直前のターンの所要時間"}
+            >
+              ⏱ {formatElapsed(elapsedTime)}
+            </span>
+          )}
           <span>{connectionMode === "native" ? "Windows-native" : `WSL: ${distro}`}</span>
           {initInfo && <span>Codex CLI: {initInfo.userAgent.split("/")[1]?.split(" ")[0] || initInfo.userAgent}</span>}
           {activeThreadId && (
