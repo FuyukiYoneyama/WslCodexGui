@@ -312,17 +312,6 @@ export default function App() {
   // whenever the visible list is rebuilt from scratch by refreshThreads.
   const [threadsNextCursor, setThreadsNextCursor] = useState<string | null | undefined>(undefined);
   const [threadsLoadingMore, setThreadsLoadingMore] = useState(false);
-  const [appVersion, setAppVersion] = useState<string | null>(null);
-  useEffect(() => {
-    void (async () => {
-      try {
-        const { getVersion } = await import("@tauri-apps/api/app");
-        setAppVersion(await getVersion());
-      } catch {
-        // dev server without the Tauri runtime, etc.; footer just omits it
-      }
-    })();
-  }, []);
   const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
   const [activeTurnId, setActiveTurnId] = useState<string | null>(null);
   const [items, setItems] = useState<DisplayItem[]>([]);
@@ -2826,7 +2815,6 @@ export default function App() {
       )}
 
       <footer className="statusbar">
-        {appVersion && <span className="app-version">WslCodexGui v{appVersion}</span>}
         <span className={`dot ${connState}`} />
         <span>
           {connState === "connected"
