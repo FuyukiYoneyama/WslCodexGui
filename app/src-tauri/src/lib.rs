@@ -471,6 +471,44 @@ async fn verify_codex_path_native(path: String) -> Result<bool, String> {
         .unwrap_or(false))
 }
 
+/// Milliseconds since the last keyboard or mouse input *anywhere on the
+/// desktop*, not just in this app's window (`GetLastInputInfo`, which reports
+/// the session-wide last input tick).
+///
+/// Used to decide whether a finished turn is worth flashing the window for:
+/// if the user has been touching the machine, they can see the transcript
+/// update on their own. Reads a counter the OS already maintains -- nothing is
+/// hooked, and no keystroke or cursor position is ever observed.
+#[tauri::command]
+fn system_idle_millis() -> Result<u64, String> {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::System::SystemInformation::GetTickCount;
+        use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetLastInputInfo, LASTINPUTINFO};
+
+        let mut info = LASTINPUTINFO {
+            cbSize: std::mem::size_of::<LASTINPUTINFO>() as u32,
+            dwTime: 0,
+        };
+        // SAFETY: `info` is a correctly sized, fully initialized LASTINPUTINFO
+        // and the call only writes to it.
+        let ok = unsafe { GetLastInputInfo(&mut info) };
+        if ok == 0 {
+            return Err("GetLastInputInfo failed".into());
+        }
+        // Both counters wrap at ~49.7 days; wrapping_sub keeps the difference
+        // correct across the rollover.
+        let now = unsafe { GetTickCount() };
+        Ok(u64::from(now.wrapping_sub(info.dwTime)))
+    }
+    #[cfg(not(windows))]
+    {
+        // Non-Windows builds have no equivalent here; reporting "just used"
+        // means the notice simply never fires rather than firing wrongly.
+        Ok(0)
+    }
+}
+
 /// Open an interactive Windows shell at `path` in its own console window
 /// (native-mode counterpart to `open_wsl_terminal`). Sets the child's cwd
 /// directly rather than building a `cd`-then-path shell command, so `path`
@@ -736,7 +774,8 @@ pub fn run() {
             detect_codex_path,
             verify_codex_path,
             detect_codex_path_native,
-            verify_codex_path_native
+            verify_codex_path_native,
+            system_idle_millis
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

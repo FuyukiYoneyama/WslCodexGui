@@ -21,6 +21,8 @@ import type {
 } from "./types";
 import {
   AgentMessageDeltaSchema,
+  ReasoningSummaryPartAddedSchema,
+  ReasoningSummaryTextDeltaSchema,
   GetAccountRateLimitsResponseSchema,
   GitDiffToRemoteResponseSchema,
   InitializeResponseSchema,
@@ -50,7 +52,15 @@ import { CONFIRMED_CODEX_CLI_VERSIONS, isConfirmedCodexCliVersion, parseCodexCli
 import { decideJournalReconciliation } from "./journalReconciliation";
 import { isApprovalMethod } from "./approvalMethods";
 import { formatLinkAddress, splitLineSuffix } from "./linkTarget";
+import { forcedEffortForModel } from "./modelEffort";
+import { IDLE_POLL_INTERVAL_MS, inputDetected, shouldNotifyOnTurnEnd } from "./idleNotice";
 import { itemToText, transcriptToText } from "./transcriptCopy";
+import {
+  appendSummaryDelta,
+  liveReasoningText,
+  startSummaryPart,
+  type LiveReasoning,
+} from "./liveReasoning";
 import "./App.css";
 
 type ConnState = "disconnected" | "connecting" | "connected" | "disconnecting";
@@ -115,6 +125,18 @@ const REASONING_EFFORTS: { value: ReasoningEffort; label: string }[] = [
   { value: "xhigh", label: "非常に高い" },
   { value: "max", label: "最大" },
 ];
+
+// turn/start's `summary` ("auto" | "concise" | "detailed" | "none"), sent on
+// every turn like effort/serviceTier. Not a user setting: without it, this
+// environment's codex produced *no* reasoning summary at all -- verified
+// against a live app-server on 2026-08-02, where a turn spawned the way this
+// app spawns it delivered `reasoning` items with `summary: []` and zero
+// item/reasoning/* notifications, while the same turn under
+// `-c model_reasoning_summary="detailed"` streamed them. Both the live
+// 推論経過 pane and the transcript's own reasoning bubbles are empty without
+// it, so the app asks for summaries rather than depending on the user's
+// ~/.codex/config.toml.
+const REASONING_SUMMARY = "detailed";
 
 type ServiceTier = "default" | "priority";
 const SERVICE_TIERS: { value: ServiceTier; label: string }[] = [
@@ -305,6 +327,13 @@ export default function App() {
   const [items, setItems] = useState<DisplayItem[]>([]);
   // Transient ✅ on the whole-transcript copy button.
   const [copiedAll, setCopiedAll] = useState(false);
+  // Reasoning summary streamed during the running turn, shown in a pane that
+  // exists only while that turn does (the finished text lands in the
+  // transcript as a normal reasoning item anyway).
+  const [liveReasoning, setLiveReasoning] = useState<LiveReasoning | null>(null);
+  const [liveReasoningOpen, setLiveReasoningOpen] = useState(
+    () => localStorage.getItem("liveReasoningOpen") !== "false"
+  );
   const [approvals, setApprovals] = useState<ServerRequest[]>([]);
   const [approvalRespondingId, setApprovalRespondingId] = useState<RequestId | null>(null);
   const [input, setInput] = useState("");
@@ -510,11 +539,72 @@ export default function App() {
     }, 33);
   }, []);
 
+  // "Turn finished while you were away" notice. Refs rather than state: the
+  // notification listener is registered once per connection and must always
+  // see the current flashing state, and nothing here needs to re-render.
+  const flashingRef = useRef(false);
+  const flashPollRef = useRef<number | null>(null);
+
+  const stopFlashing = useCallback(() => {
+    if (flashPollRef.current !== null) {
+      window.clearInterval(flashPollRef.current);
+      flashPollRef.current = null;
+    }
+    if (!flashingRef.current) return;
+    flashingRef.current = false;
+    void (async () => {
+      const { getCurrentWindow } = await import("@tauri-apps/api/window");
+      await getCurrentWindow().requestUserAttention(null);
+    })().catch(() => {
+      // Nothing useful to tell the user if merely *stopping* the flash fails.
+    });
+  }, []);
+
+  // Flash only if the desktop itself has been idle -- someone who has been
+  // moving the mouse can see the turn finish on their own. Once flashing,
+  // poll the same counter and stop at the first sign of input anywhere.
+  const notifyTurnEndIfIdle = useCallback(() => {
+    void (async () => {
+      try {
+        const idle = await invoke<number>("system_idle_millis");
+        if (!shouldNotifyOnTurnEnd(idle)) return;
+        const { getCurrentWindow, UserAttentionType } = await import("@tauri-apps/api/window");
+        await getCurrentWindow().requestUserAttention(UserAttentionType.Critical);
+        flashingRef.current = true;
+        let previousIdle = idle;
+        flashPollRef.current = window.setInterval(() => {
+          void (async () => {
+            try {
+              const current = await invoke<number>("system_idle_millis");
+              if (inputDetected(previousIdle, current)) stopFlashing();
+              else previousIdle = current;
+            } catch {
+              stopFlashing(); // can't tell any more -- don't flash forever
+            }
+          })();
+        }, IDLE_POLL_INTERVAL_MS);
+      } catch {
+        // Idle state unavailable: skip the notice rather than flash blindly.
+      }
+    })();
+  }, [stopFlashing]);
+
+  useEffect(() => stopFlashing, [stopFlashing]);
+
   const transcriptRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const el = transcriptRef.current;
     if (el) el.scrollTop = el.scrollHeight;
   }, [items, activeTurnId]);
+
+  // The live reasoning pane follows its own tail, independently of the
+  // transcript's scroll position.
+  const liveReasoningShown = liveReasoningText(liveReasoning);
+  const liveReasoningRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = liveReasoningRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [liveReasoningShown]);
 
   // The composer is disabled while a turn runs (N-17), which blurs it — the
   // browser doesn't restore focus on its own once it re-enables, so do it
@@ -894,6 +984,8 @@ export default function App() {
             const p = parseOrReport(TurnStartedNotificationSchema, params, "turn/started", setErrorBanner);
             if (!p) break;
             setActiveTurnId(p.turn.id);
+            setLiveReasoning(null); // the pane belongs to one turn only
+            stopFlashing(); // a previous turn's notice is stale once work resumes
             journalMarkStarted(p.threadId, p.turn.id);
             break;
           }
@@ -901,10 +993,12 @@ export default function App() {
             const p = parseOrReport(TurnCompletedNotificationSchema, params, "turn/completed", setErrorBanner);
             if (!p) break;
             setActiveTurnId(null);
+            setLiveReasoning(null); // the transcript's reasoning item takes over
             if (p.turn.status === "failed") {
               setErrorBanner(`Turn failed: ${JSON.stringify((p.turn as unknown as TurnCompletedNotification["turn"]).error)}`);
             }
             journalMarkCompleted(p.threadId);
+            notifyTurnEndIfIdle();
             void fetchUsage(); // keep the footer badge current after each turn
             break;
           }
@@ -935,6 +1029,32 @@ export default function App() {
             const cur = deltaBufRef.current.get(p.itemId) ?? "";
             deltaBufRef.current.set(p.itemId, cur + p.delta);
             scheduleFlush();
+            break;
+          }
+          // Reasoning summary streaming. Unlike agentMessage deltas these are
+          // not merged into an item in `items` -- the item they belong to is
+          // only added to the transcript once it completes, and until then the
+          // temporary pane is the only place this text is visible.
+          case "item/reasoning/summaryTextDelta": {
+            const p = parseOrReport(
+              ReasoningSummaryTextDeltaSchema,
+              params,
+              "item/reasoning/summaryTextDelta",
+              setErrorBanner
+            );
+            if (!p) break;
+            setLiveReasoning((prev) => appendSummaryDelta(prev, p));
+            break;
+          }
+          case "item/reasoning/summaryPartAdded": {
+            const p = parseOrReport(
+              ReasoningSummaryPartAddedSchema,
+              params,
+              "item/reasoning/summaryPartAdded",
+              setErrorBanner
+            );
+            if (!p) break;
+            setLiveReasoning((prev) => startSummaryPart(prev, p));
             break;
           }
           case "item/commandExecution/outputDelta": {
@@ -1003,6 +1123,7 @@ export default function App() {
         connectionIdRef.current = null;
         setConnState("disconnected");
         setActiveTurnId(null);
+        setLiveReasoning(null);
         discardPastedImages();
         discardSentImages();
         // Pending approvals died with the connection (spec 7.3: 失効).
@@ -1170,6 +1291,9 @@ export default function App() {
       const thread = res.thread as unknown as Thread;
       setActiveThreadId(thread.id);
       setActiveTurnId(latestInProgressTurnId(thread.turns));
+      // A resumed turn's earlier reasoning deltas are gone (they were only
+      // ever streamed); the pane refills from the next delta onwards.
+      setLiveReasoning(null);
       setThreadTokenUsage(null); // stale until the next tokenUsage/updated for this thread
       setItems(
         thread.turns.flatMap((t) =>
@@ -1255,6 +1379,7 @@ export default function App() {
         discardPastedImages();
         setActiveThreadId(null);
         setActiveTurnId(null);
+        setLiveReasoning(null);
         setItems([]);
       }
     } catch (e) {
@@ -1447,6 +1572,7 @@ export default function App() {
     setModelOverrideLabel(m.displayName);
     localStorage.setItem("modelOverride", m.model);
     localStorage.setItem("modelOverrideLabel", m.displayName);
+    applyForcedEffort(m.model);
     setModelPicker(null);
   };
 
@@ -1474,6 +1600,16 @@ export default function App() {
       localStorage.removeItem("modelOverride");
       localStorage.removeItem("modelOverrideLabel");
     }
+    applyForcedEffort(trimmed);
+  };
+
+  // Applied at selection time only (both the pre-connect field and the
+  // post-connect 🧠 picker route through here), never on load: forcing it on
+  // load would silently overwrite a level the user deliberately set for a
+  // model they are already on.
+  const applyForcedEffort = (modelId: string | null) => {
+    const forced = forcedEffortForModel(modelId);
+    if (forced && forced !== reasoningEffort) onReasoningEffortChange(forced);
   };
 
   // Silent lookup of the account's default model, purely for the footer
@@ -1785,6 +1921,7 @@ export default function App() {
           ...(modelOverride ? { model: modelOverride } : {}),
           ...(reasoningEffort ? { effort: reasoningEffort } : {}),
           ...(serviceTier ? { serviceTier } : {}),
+          summary: REASONING_SUMMARY,
         },
       });
       journalMarkSent(activeThreadId, requestId);
@@ -1965,7 +2102,7 @@ export default function App() {
                       }
                       onModelOverrideInput(e.target.value);
                     }}
-                    title="turn/startのmodelとして毎ターン送信されます。接続後はフッターの🧠バッジから一覧を見て選べます（推論レベル・速度の対応状況もそちらで確認できます）"
+                    title="turn/startのmodelとして毎ターン送信されます。接続後はフッターの🧠バッジから一覧を見て選べます（推論レベル・速度の対応状況もそちらで確認できます）。GPT-5.6-Lunaを選ぶと推論レベルは自動で「最大」に、Sol/Terraを選ぶと自動で「高い」になります（選択後に変更可）"
                   >
                     {!MODEL_PRESETS.some((m) => m.value === (modelOverride ?? DEFAULT_MODEL_OVERRIDE)) && (
                       <option value={modelOverride ?? DEFAULT_MODEL_OVERRIDE}>
@@ -1986,7 +2123,7 @@ export default function App() {
                 <select
                   value={reasoningEffort ?? ""}
                   onChange={(e) => onReasoningEffortChange(e.target.value)}
-                  title="turn/startのeffortとして毎ターン送信されます。接続後もフッターのバッジからいつでも変更できます"
+                  title="turn/startのeffortとして毎ターン送信されます。接続後もフッターのバッジからいつでも変更できます。GPT-5.6-Lunaを選ぶとここは自動で「最大」に、Sol/Terraを選ぶと自動で「高い」になります"
                 >
                   <option value="">指定なし（サーバー側の設定に従う）</option>
                   {REASONING_EFFORTS.map((r) => (
@@ -2276,6 +2413,41 @@ export default function App() {
             ))}
             {activeTurnId && <div className="working">Codex is working…</div>}
           </div>
+          {/* Temporary pane: exists only while the turn that produced this text
+              is still running. Collapsed state persists, the text never does. */}
+          {activeTurnId && liveReasoningShown && (
+            <div className="live-reasoning">
+              <div className="live-reasoning-head">
+                <span>💭 推論経過（作業中）</span>
+                <button
+                  type="button"
+                  className="mini"
+                  onClick={() => {
+                    const next = !liveReasoningOpen;
+                    setLiveReasoningOpen(next);
+                    localStorage.setItem("liveReasoningOpen", String(next));
+                  }}
+                >
+                  {liveReasoningOpen ? "隠す" : "表示"}
+                </button>
+              </div>
+              {liveReasoningOpen && (
+                <div className="live-reasoning-body" ref={liveReasoningRef}>
+                  {/* Summaries are markdown ("**Planning the fix**"), same as
+                      the reasoning bubbles the transcript renders once the item
+                      completes -- rendered as plain text the bold markers show
+                      up as literal asterisks. Links go through MarkdownLink for
+                      the same reason they do in the transcript. */}
+                  <ReactMarkdown
+                    remarkPlugins={[remarkGfm]}
+                    components={markdownLinkComponents(distro, projectCwd, connectionMode, setErrorBanner)}
+                  >
+                    {liveReasoningShown}
+                  </ReactMarkdown>
+                </div>
+              )}
+            </div>
+          )}
           <div className="composer-wrap">
             {slashOpen && filteredCommands.length > 0 && (
               <ul className="slash-menu">

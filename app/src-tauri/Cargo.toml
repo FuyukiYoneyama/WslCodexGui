@@ -1,6 +1,6 @@
 [package]
 name = "app"
-version = "0.5.10"
+version = "0.5.16"
 description = "WSL2内のCodex CLI（app-server）をWindowsネイティブGUIから操作するためのラッパーアプリ"
 authors = ["Fuyuki Yoneyama"]
 license = "MIT"
@@ -27,3 +27,10 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["process", "io-util", "sync", "time", "macros", "rt-multi-thread"] }
 uuid = { version = "1", features = ["v4"] }
+
+# GetLastInputInfo/GetTickCount for desktop-wide idle detection (the
+# turn-finished flash only fires when the user is away from the machine, not
+# just away from this window). A webview only ever sees input delivered to its
+# own window, so this has to come from the OS.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_SystemInformation", "Win32_UI_Input_KeyboardAndMouse"] }

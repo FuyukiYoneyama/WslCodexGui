@@ -166,6 +166,29 @@ export const AgentMessageDeltaSchema = z
   })
   .passthrough();
 
+// Reasoning summary streaming (the live "推論経過" pane). `summaryIndex`
+// separates the paragraphs of one reasoning item -- summaryPartAdded starts a
+// new one, summaryTextDelta appends to the one at that index. Confirmed
+// against `codex app-server generate-json-schema` on codex-cli 0.145.0.
+export const ReasoningSummaryTextDeltaSchema = z
+  .object({
+    threadId: z.string(),
+    turnId: z.string(),
+    itemId: z.string(),
+    summaryIndex: z.number(),
+    delta: z.string(),
+  })
+  .passthrough();
+
+export const ReasoningSummaryPartAddedSchema = z
+  .object({
+    threadId: z.string(),
+    turnId: z.string(),
+    itemId: z.string(),
+    summaryIndex: z.number(),
+  })
+  .passthrough();
+
 export const ModelSchema = z
   .object({
     id: z.string(),
