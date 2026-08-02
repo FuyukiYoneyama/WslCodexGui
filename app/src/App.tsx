@@ -54,6 +54,7 @@ import { isApprovalMethod } from "./approvalMethods";
 import { formatLinkAddress, splitLineSuffix } from "./linkTarget";
 import { forcedEffortForModel } from "./modelEffort";
 import { turnModelFields } from "./turnModelFields";
+import { creditBadge } from "./creditBadge";
 import { IDLE_POLL_INTERVAL_MS, inputDetected, shouldNotifyOnTurnEnd } from "./idleNotice";
 import { formatElapsed } from "./formatElapsed";
 import { itemToText, transcriptToText } from "./transcriptCopy";
@@ -2976,35 +2977,33 @@ function UsagePill({ label, pct }: { label: string; pct: number | undefined }) {
   );
 }
 
-// True once a rate-limit window is fully used and Codex would fall back to
-// drawing on purchased credits for further requests (the account has a
-// balance and isn't on an unlimited plan).
-function isDrawingOnCredits(rateLimits: import("./types").RateLimitSnapshot): boolean {
-  const credits = rateLimits.credits;
-  if (!credits?.hasCredits || credits.unlimited) return false;
-  const primaryExhausted = (rateLimits.primary?.usedPercent ?? 0) >= 100;
-  const secondaryExhausted = (rateLimits.secondary?.usedPercent ?? 0) >= 100;
-  return primaryExhausted || secondaryExhausted;
-}
-
-function formatCreditBalance(balance: string | null): string {
-  const n = balance === null ? NaN : Number(balance);
-  return Number.isFinite(n) ? n.toFixed(2) : (balance ?? "?");
-}
-
-// Compact footer version of the same signal as CreditBanner below --
-// distinct "credit" color (not the usual warn/danger amber-red) since
-// "now spending real money" is a different kind of alert than "quota low".
+// Compact footer readout of the credit balance. Shown whenever the account
+// has credits -- not only once the plan quota runs out, which was the old
+// behaviour and meant the number first appeared at the moment it had already
+// started being spent. The distinct "credit" colour is kept for exactly that
+// moment ("now spending real money" is a different kind of alert than "quota
+// low"), so the pill reads as neutral the rest of the time.
 function CreditPill({ rateLimits }: { rateLimits: import("./types").RateLimitSnapshot }) {
-  if (!isDrawingOnCredits(rateLimits)) return null;
-  return <span className="usage-pill credit">💳 残{formatCreditBalance(rateLimits.credits?.balance ?? null)}</span>;
+  const badge = creditBadge(rateLimits);
+  if (!badge) return null;
+  return (
+    <span
+      className={`usage-pill ${badge.drawing ? "credit" : ""}`}
+      title={badge.drawing ? "プラン枠を使い切り、購入クレジットから消費中" : "購入クレジット残高"}
+    >
+      💳 残{badge.balance}
+    </span>
+  );
 }
 
 function CreditBanner({ rateLimits }: { rateLimits: import("./types").RateLimitSnapshot }) {
-  if (!isDrawingOnCredits(rateLimits)) return null;
+  const badge = creditBadge(rateLimits);
+  // The banner stays an alarm: it only appears once credits are actually
+  // being drawn on, unlike the always-on pill above.
+  if (!badge?.drawing) return null;
   return (
     <div className="credit-banner">
-      💳 プラン枠を使い切り、購入クレジットから消費中です。残クレジット: {formatCreditBalance(rateLimits.credits?.balance ?? null)}
+      💳 プラン枠を使い切り、購入クレジットから消費中です。残クレジット: {badge.balance}
     </div>
   );
 }
