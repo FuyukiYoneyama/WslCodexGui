@@ -1,2 +1,8 @@
 # PoC scripts are kept locally; existing tracked PoCs remain tracked.
 /poc/*
+
+# Accidentally created at the repo root by running cargo/tauri build from
+# the wrong directory (the real build output lives in app/src-tauri/target/,
+# already covered by app/src-tauri/.gitignore). Got committed repeatedly
+# (10MB binary each time) before this rule existed; removed from tracking.
+/target/
