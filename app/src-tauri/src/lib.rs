@@ -86,8 +86,21 @@ async fn connect(
     distro: String,
     codex_path: String,
     config_overrides: Vec<String>,
-    ollama_base_url: Option<String>,
+    use_ollama: bool,
 ) -> Result<Value, RpcFailure> {
+    // Resolve the endpoint from the app-server's execution environment. The
+    // Windows-side model-list route is deliberately separate and always uses
+    // Windows loopback; a WSL app-server may instead need the NAT gateway.
+    let ollama_codex_base_url = if use_ollama {
+        Some(
+            resolve_ollama_codex_base_url(&connection_mode, &distro)
+                .await
+                .map_err(RpcFailure::from)?,
+        )
+    } else {
+        None
+    };
+
     // Drop any previous connection first.
     if let Some(old) = state.conn.lock().await.take() {
         old.shutdown().await;
@@ -99,7 +112,7 @@ async fn connect(
         &distro,
         &codex_path,
         &config_overrides,
-        ollama_base_url.as_deref(),
+        ollama_codex_base_url.as_deref(),
     )
     .await
     .map_err(RpcFailure::from)?;
@@ -564,6 +577,8 @@ struct OllamaModelInfo {
     context_length: Option<u64>,
 }
 
+const OLLAMA_WINDOWS_ROOT: &str = "http://127.0.0.1:11434";
+
 /// List locally pulled Ollama models (name + real context length) from
 /// Ollama's native /api/tags (not the OpenAI-compat /v1/models codex itself
 /// queries, which is why codex falls back to generic metadata for unknown
@@ -572,20 +587,19 @@ struct OllamaModelInfo {
 /// CORS restrictions, but curl.exe -> Ollama (both on Windows) isn't a
 /// cross-origin request at all.
 #[tauri::command]
-async fn list_ollama_models(endpoint: String) -> Result<Vec<OllamaModelInfo>, String> {
-    let endpoint = endpoint.trim().trim_end_matches('/');
-    if !(endpoint.starts_with("http://") || endpoint.starts_with("https://"))
-        || endpoint.contains(['\r', '\n'])
-    {
-        return Err("Ollama endpoint must be an http(s) URL".into());
-    }
+async fn list_ollama_models() -> Result<Vec<OllamaModelInfo>, String> {
     let output = tokio::process::Command::new("curl.exe")
-        .args(["-s", &format!("{endpoint}/api/tags")])
+        .args(["-sS", &format!("{OLLAMA_WINDOWS_ROOT}/api/tags")])
         .output()
         .await
         .map_err(|e| format!("failed to run curl.exe: {e}"))?;
     if !output.status.success() {
-        return Err(format!("curl.exe exited with {}", output.status));
+        let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(if detail.is_empty() {
+            format!("curl.exe exited with {}", output.status)
+        } else {
+            format!("curl.exe exited with {}: {detail}", output.status)
+        });
     }
     let body = String::from_utf8_lossy(&output.stdout);
     let json: Value =
@@ -612,16 +626,104 @@ async fn list_ollama_models(endpoint: String) -> Result<Vec<OllamaModelInfo>, St
     Ok(result)
 }
 
-/// Return the Windows-side Ollama endpoint. OLLAMA_HOST is commonly set to
-/// the WSL virtual gateway on Windows 10 NAT installations; Windows 11
-/// mirrored networking normally needs no override and falls back to localhost.
-#[tauri::command]
-fn detect_ollama_endpoint() -> String {
-    let host = std::env::var("OLLAMA_HOST").unwrap_or_else(|_| "127.0.0.1:11434".into());
-    if host.starts_with("http://") || host.starts_with("https://") {
-        host.trim_end_matches('/').to_string()
+/// Choose the endpoint from the app-server's point of view. Native Codex runs
+/// on Windows and therefore uses Windows loopback. WSL Codex first tries
+/// loopback (mirrored networking) and only falls back to the WSL default
+/// gateway (NAT networking). OLLAMA_HOST is intentionally ignored: it is the
+/// Ollama server's bind address, not a client destination.
+async fn resolve_ollama_codex_base_url(
+    connection_mode: &str,
+    distro: &str,
+) -> Result<String, String> {
+    if connection_mode == "native" {
+        return Ok(format!("{OLLAMA_WINDOWS_ROOT}/v1"));
+    }
+
+    validate_distro(distro)?;
+    let loopback_error = match probe_ollama_from_wsl(distro, OLLAMA_WINDOWS_ROOT).await {
+        Ok(()) => return Ok(format!("{OLLAMA_WINDOWS_ROOT}/v1")),
+        Err(error) => error,
+    };
+
+    let gateway = wsl_default_gateway(distro).await?;
+    let gateway_root = ollama_root_for_host(&gateway);
+    probe_ollama_from_wsl(distro, &gateway_root)
+        .await
+        .map_err(|gateway_error| {
+            format!(
+                "Ollama is unreachable from WSL via loopback ({loopback_error}) or NAT gateway {gateway} ({gateway_error})"
+            )
+        })?;
+    Ok(format!("{gateway_root}/v1"))
+}
+
+async fn probe_ollama_from_wsl(distro: &str, root: &str) -> Result<(), String> {
+    let url = format!("{}/api/version", root.trim_end_matches('/'));
+    let output = tokio::process::Command::new("wsl.exe")
+        .args([
+            "-d",
+            distro,
+            "--exec",
+            "curl",
+            "-fsS",
+            "--connect-timeout",
+            "3",
+            "--max-time",
+            "5",
+            "-o",
+            "/dev/null",
+            &url,
+        ])
+        .output()
+        .await
+        .map_err(|e| format!("failed to run WSL curl: {e}"))?;
+    if output.status.success() {
+        Ok(())
     } else {
-        format!("http://{}", host.trim_end_matches('/'))
+        let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        if detail.is_empty() {
+            Err(format!("WSL curl exited with {}", output.status))
+        } else {
+            Err(detail)
+        }
+    }
+}
+
+async fn wsl_default_gateway(distro: &str) -> Result<String, String> {
+    let output = tokio::process::Command::new("wsl.exe")
+        .args(["-d", distro, "--exec", "ip", "route", "show", "default"])
+        .output()
+        .await
+        .map_err(|e| format!("failed to read the WSL default route: {e}"))?;
+    if !output.status.success() {
+        let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(if detail.is_empty() {
+            format!("WSL ip route exited with {}", output.status)
+        } else {
+            detail
+        });
+    }
+    parse_default_gateway(&String::from_utf8_lossy(&output.stdout))
+        .ok_or_else(|| "WSL default route did not contain a valid gateway".to_string())
+}
+
+fn parse_default_gateway(routes: &str) -> Option<String> {
+    routes.lines().find_map(|line| {
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        let via = fields.iter().position(|field| *field == "via")?;
+        let candidate = *fields.get(via + 1)?;
+        candidate
+            .parse::<std::net::IpAddr>()
+            .ok()
+            .map(|address| address.to_string())
+    })
+}
+
+fn ollama_root_for_host(host: &str) -> String {
+    if host.contains(':') {
+        format!("http://[{host}]:11434")
+    } else {
+        format!("http://{host}:11434")
     }
 }
 
@@ -791,7 +893,6 @@ pub fn run() {
             delete_pasted_image,
             windows_path_to_wsl,
             list_ollama_models,
-            detect_ollama_endpoint,
             list_wsl_distros,
             detect_codex_path,
             verify_codex_path,
@@ -806,9 +907,27 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::{
-        pasted_image_filename, pasted_image_filename_native, strip_wsl_unc, validate_distro,
-        wsl_exec_args,
+        ollama_root_for_host, parse_default_gateway, pasted_image_filename,
+        pasted_image_filename_native, strip_wsl_unc, validate_distro, wsl_exec_args,
     };
+
+    #[test]
+    fn parses_wsl_nat_gateway_from_default_route() {
+        assert_eq!(
+            parse_default_gateway("default via 172.21.112.1 dev eth0 proto kernel\n"),
+            Some("172.21.112.1".to_string())
+        );
+        assert_eq!(parse_default_gateway("default dev eth0 scope link\n"), None);
+    }
+
+    #[test]
+    fn builds_ollama_root_for_ipv4_and_ipv6_gateways() {
+        assert_eq!(
+            ollama_root_for_host("172.21.112.1"),
+            "http://172.21.112.1:11434"
+        );
+        assert_eq!(ollama_root_for_host("fd00::1"), "http://[fd00::1]:11434");
+    }
 
     #[test]
     fn wsl_commands_use_exec_argument_boundary() {
