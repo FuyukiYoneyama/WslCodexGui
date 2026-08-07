@@ -159,6 +159,38 @@ const SERVICE_TIERS: { value: ServiceTier; label: string }[] = [
   { value: "priority", label: "高速（1.5倍速、使用量多め）" },
 ];
 
+// A short two-note chime for new approval requests, synthesized via Web
+// Audio instead of shipping an audio asset. Best-effort: browsers/WebView2
+// suspend AudioContext until a user gesture has occurred on the page, which
+// by the time an approval fires (after the user has already typed/clicked
+// to start a turn) should already be satisfied; if not, this just stays
+// silent rather than throwing.
+function playApprovalBell() {
+  try {
+    const AudioCtxCtor = window.AudioContext ?? (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+    if (!AudioCtxCtor) return;
+    const ctx = new AudioCtxCtor();
+    void ctx.resume();
+    const now = ctx.currentTime;
+    const gain = ctx.createGain();
+    gain.gain.setValueAtTime(0.0001, now);
+    gain.gain.exponentialRampToValueAtTime(0.25, now + 0.01);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.4);
+    gain.connect(ctx.destination);
+
+    const osc = ctx.createOscillator();
+    osc.type = "sine";
+    osc.frequency.setValueAtTime(880, now); // A5
+    osc.frequency.setValueAtTime(1108.73, now + 0.16); // C#6
+    osc.connect(gain);
+    osc.start(now);
+    osc.stop(now + 0.45);
+    osc.onended = () => void ctx.close();
+  } catch {
+    // best-effort notification sound; never let this break the approval flow
+  }
+}
+
 // codex's own trust list (~/.codex/config.toml [projects]) decides sandbox
 // per exact cwd path with no inheritance from a trusted parent -- a project
 // folder picked here that isn't separately trusted via the codex CLI (which
@@ -1181,6 +1213,7 @@ export default function App() {
         // card instead of being visibly unhandled.
         if (isApprovalMethod(req.method)) {
           setApprovals((prev) => [...prev, req as ServerRequest]);
+          playApprovalBell();
         } else {
           setErrorBanner(`未対応のserver request: ${req.method}`);
           void invoke("reject_server_request", {

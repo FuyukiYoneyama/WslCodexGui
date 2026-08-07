@@ -10,6 +10,11 @@
   --accent: #2563eb;
   --danger: #dc2626;
   --user-bubble: #dbeafe;
+  /* Deliberately a different hue from --user-bubble (used for general
+     highlight/active states elsewhere) -- it's also close to --working-bg,
+     which made the user's own message bubble blend into the "turn active"
+     background during a running turn. */
+  --user-msg-bubble: #dcfce7;
   --agent-bubble: #ffffff;
   --working-bg: #eaf1ff;
 }
@@ -22,6 +27,7 @@
     --text: #e6e6e6;
     --muted: #9a9aa5;
     --user-bubble: #1e3a5f;
+    --user-msg-bubble: #1c3a26;
     --agent-bubble: #2a2a31;
     --working-bg: #16233d;
   }
@@ -180,7 +186,7 @@ body { background: var(--bg); color: var(--text); }
 }
 .msg:hover .msg-copy { opacity: 0.75; pointer-events: auto; }
 .msg-copy:hover, .msg-copy:focus-visible { opacity: 1; pointer-events: auto; background: var(--user-bubble); }
-.msg.user { background: var(--user-bubble); border-color: transparent; white-space: pre-wrap; }
+.msg.user { background: var(--user-msg-bubble); border-color: transparent; white-space: pre-wrap; }
 .msg.reasoning { font-size: 12px; color: var(--muted); font-style: italic; }
 .msg.command code { display: block; font-family: Consolas, monospace; font-size: 12px; }
 .msg.command pre {
