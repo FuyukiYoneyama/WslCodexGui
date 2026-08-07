@@ -139,14 +139,22 @@ impl Connection {
         distro: &str,
         codex_path: &str,
         config_overrides: &[String],
+        ollama_base_url: Option<&str>,
     ) -> Result<Arc<Self>, String> {
         let mut cmd = if connection_mode == "native" {
             let mut c = Command::new("cmd.exe");
             c.args(["/c", codex_path, "app-server"]);
+            if let Some(url) = ollama_base_url {
+                c.env("CODEX_OSS_BASE_URL", url);
+            }
             c
         } else {
             let mut c = Command::new("wsl.exe");
-            c.args(["-d", distro, "--exec", codex_path, "app-server"]);
+            c.args(["-d", distro, "--exec", "env"]);
+            if let Some(url) = ollama_base_url {
+                c.arg(format!("CODEX_OSS_BASE_URL={url}"));
+            }
+            c.args([codex_path, "app-server"]);
             c
         };
         // e.g. "model_provider=ollama", "model=gpt-oss:20b" -- never written to

@@ -141,6 +141,13 @@ const USAGE_POLL_INTERVAL_MS = 30_000;
 // "xhigh", which sits between "high" and "max".
 const OLLAMA_DEFAULT_EFFORT: ReasoningEffort = "high";
 
+// Ollama's native model-list API lives at the root endpoint, while Codex's
+// OpenAI-compatible provider expects its base URL to include /v1.
+function ollamaCodexBaseUrl(endpoint: string): string {
+  const normalized = endpoint.trim().replace(/\/+$/, "");
+  return normalized.endsWith("/v1") ? normalized : `${normalized}/v1`;
+}
+
 // turn/start's `summary` ("auto" | "concise" | "detailed" | "none"), sent on
 // every turn like effort/serviceTier. Not a user setting: without it, this
 // environment's codex produced *no* reasoning summary at all -- verified
@@ -302,6 +309,9 @@ export default function App() {
   );
   const [ollamaModel, setOllamaModel] = useState(
     () => localStorage.getItem("ollamaModel") ?? "gpt-oss:20b"
+  );
+  const [ollamaBaseUrl, setOllamaBaseUrl] = useState(
+    () => localStorage.getItem("ollamaBaseUrl") ?? "http://127.0.0.1:11434"
   );
   // codex has no built-in metadata for arbitrary Ollama models and otherwise
   // falls back to an oversized default (see the "Defaulting to fallback
@@ -1282,6 +1292,7 @@ export default function App() {
     localStorage.setItem("provider", provider);
     localStorage.setItem("ollamaModel", ollamaModel);
     localStorage.setItem("ollamaContextWindow", ollamaContextWindow);
+    localStorage.setItem("ollamaBaseUrl", ollamaBaseUrl.trim());
     const configOverrides: string[] =
       provider === "ollama"
         ? [
@@ -1302,7 +1313,13 @@ export default function App() {
     setConnState("connecting");
     setErrorBanner(null);
     try {
-      const raw = await invoke("connect", { connectionMode, distro, codexPath, configOverrides });
+      const raw = await invoke("connect", {
+        connectionMode,
+        distro,
+        codexPath,
+        configOverrides,
+        ollamaBaseUrl: provider === "ollama" ? ollamaCodexBaseUrl(ollamaBaseUrl) : null,
+      });
       const info = parseOrReport(InitializeResponseSchema, raw, "initialize", setErrorBanner);
       if (!info) {
         setConnState("disconnected");
@@ -1631,7 +1648,9 @@ export default function App() {
   const refreshOllamaModels = async () => {
     setOllamaModelsLoading(true);
     try {
-      const models = await invoke<{ name: string; context_length: number | null }[]>("list_ollama_models");
+      const models = await invoke<{ name: string; context_length: number | null }[]>("list_ollama_models", {
+        endpoint: ollamaBaseUrl,
+      });
       setOllamaModels(models.map((m) => ({ name: m.name, contextLength: m.context_length })));
     } catch (e) {
       setErrorBanner(`Ollamaのモデル一覧取得に失敗しました（起動していますか？）: ${e}`);
@@ -1649,11 +1668,17 @@ export default function App() {
   };
 
   useEffect(() => {
+    if (!localStorage.getItem("ollamaBaseUrl")) {
+      void invoke<string>("detect_ollama_endpoint").then((url) => setOllamaBaseUrl(url));
+    }
+  }, []);
+
+  useEffect(() => {
     if (provider === "ollama" && ollamaModels.length === 0 && !ollamaModelsLoading) {
       void refreshOllamaModels();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [provider]);
+  }, [provider, ollamaBaseUrl]);
 
   const stop = async () => {
     if (!activeThreadId || !activeTurnId) return;
@@ -2284,6 +2309,15 @@ export default function App() {
           )}
           {provider === "ollama" && (
             <>
+              <label>
+                Ollama接続先
+                <input
+                  value={ollamaBaseUrl}
+                  onChange={(e) => setOllamaBaseUrl(e.target.value)}
+                  placeholder="http://127.0.0.1:11434"
+                  title="Windows 10 NATではWSLから見えるWindowsホストIP、Windows 11 Mirroredではlocalhost"
+                />
+              </label>
               <label>
                 Ollamaモデル
                 <div className="project-path-row">

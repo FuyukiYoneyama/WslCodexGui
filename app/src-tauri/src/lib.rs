@@ -86,6 +86,7 @@ async fn connect(
     distro: String,
     codex_path: String,
     config_overrides: Vec<String>,
+    ollama_base_url: Option<String>,
 ) -> Result<Value, RpcFailure> {
     // Drop any previous connection first.
     if let Some(old) = state.conn.lock().await.take() {
@@ -98,6 +99,7 @@ async fn connect(
         &distro,
         &codex_path,
         &config_overrides,
+        ollama_base_url.as_deref(),
     )
     .await
     .map_err(RpcFailure::from)?;
@@ -570,9 +572,15 @@ struct OllamaModelInfo {
 /// CORS restrictions, but curl.exe -> Ollama (both on Windows) isn't a
 /// cross-origin request at all.
 #[tauri::command]
-async fn list_ollama_models() -> Result<Vec<OllamaModelInfo>, String> {
+async fn list_ollama_models(endpoint: String) -> Result<Vec<OllamaModelInfo>, String> {
+    let endpoint = endpoint.trim().trim_end_matches('/');
+    if !(endpoint.starts_with("http://") || endpoint.starts_with("https://"))
+        || endpoint.contains(['\r', '\n'])
+    {
+        return Err("Ollama endpoint must be an http(s) URL".into());
+    }
     let output = tokio::process::Command::new("curl.exe")
-        .args(["-s", "http://localhost:11434/api/tags"])
+        .args(["-s", &format!("{endpoint}/api/tags")])
         .output()
         .await
         .map_err(|e| format!("failed to run curl.exe: {e}"))?;
@@ -602,6 +610,19 @@ async fn list_ollama_models() -> Result<Vec<OllamaModelInfo>, String> {
         .collect();
     result.sort_by(|a, b| a.name.cmp(&b.name));
     Ok(result)
+}
+
+/// Return the Windows-side Ollama endpoint. OLLAMA_HOST is commonly set to
+/// the WSL virtual gateway on Windows 10 NAT installations; Windows 11
+/// mirrored networking normally needs no override and falls back to localhost.
+#[tauri::command]
+fn detect_ollama_endpoint() -> String {
+    let host = std::env::var("OLLAMA_HOST").unwrap_or_else(|_| "127.0.0.1:11434".into());
+    if host.starts_with("http://") || host.starts_with("https://") {
+        host.trim_end_matches('/').to_string()
+    } else {
+        format!("http://{}", host.trim_end_matches('/'))
+    }
 }
 
 /// Open `path` (a Linux path inside `distro`) in Windows Explorer via the
@@ -770,6 +791,7 @@ pub fn run() {
             delete_pasted_image,
             windows_path_to_wsl,
             list_ollama_models,
+            detect_ollama_endpoint,
             list_wsl_distros,
             detect_codex_path,
             verify_codex_path,
