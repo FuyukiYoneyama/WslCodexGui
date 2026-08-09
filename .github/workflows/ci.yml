@@ -1,18 +1,42 @@
 name: CI
 
+# Release gate only -- deliberately NOT run on every push.
+#
+# This is a solo project on a private repo, so every minute here comes out of
+# the free allowance (and Windows runners bill at a higher rate than Linux).
+# Everything this workflow checks -- build, tests, fmt, clippy -- already runs
+# locally on the machine the app is developed and used on, so running it again
+# per push buys nothing.
+#
+# What CI *would* be worth spending minutes on for this app is the Windows 10
+# vs Windows 11 difference: it shells out to wsl.exe, and WSL2 networking
+# differs between them (mirrored vs NAT -- see the Ollama endpoint fixes).
+# GitHub-hosted runners cannot cover that at all: `windows-latest` is a
+# Windows *Server* image, not either client OS. That gap is covered by real
+# hardware, not here.
+#
+# So this runs only when asked (workflow_dispatch) or on a release tag, to
+# confirm a fresh checkout of the release still builds and tests clean
+# without leaning on anything that happens to exist on the dev machine.
 on:
+  workflow_dispatch:
   push:
-    branches: [master]
-  pull_request:
-    branches: [master]
+    tags: ["v*"]
 
-# This app only ever runs on Windows (it shells out to wsl.exe), so CI runs
-# on windows-latest rather than a cheaper Linux runner to match the real
-# target and let #[cfg(windows)] code actually compile and run.
+# A newer run supersedes an older one on the same ref; don't pay for both.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# The app only ever runs on Windows (it shells out to wsl.exe), so CI runs on
+# windows-latest rather than a cheaper Linux runner to match the real target
+# and let #[cfg(windows)] code actually compile and run.
 jobs:
   frontend:
     name: Frontend (build + test)
     runs-on: windows-latest
+    # Observed ~2min; without a cap a hung job bills up to GitHub's 6h default.
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: app
@@ -30,6 +54,9 @@ jobs:
   backend:
     name: Backend (fmt + clippy + test)
     runs-on: windows-latest
+    # Higher than the frontend's: a cold rust-cache means compiling the whole
+    # Tauri dependency tree (the 8m49s run on 2026-08-07 was one of those).
+    timeout-minutes: 30
     defaults:
       run:
         working-directory: app/src-tauri

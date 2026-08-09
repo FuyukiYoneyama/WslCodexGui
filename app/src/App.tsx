@@ -55,6 +55,7 @@ import { formatLinkAddress, splitLineSuffix } from "./linkTarget";
 import { forcedEffortForModel } from "./modelEffort";
 import { turnModelFields } from "./turnModelFields";
 import { creditBadge } from "./creditBadge";
+import { composerRequest } from "./composerRequest";
 import { IDLE_POLL_INTERVAL_MS, inputDetected, shouldNotifyOnTurnEnd } from "./idleNotice";
 import { formatElapsed } from "./formatElapsed";
 import { itemToText, transcriptToText } from "./transcriptCopy";
@@ -697,9 +698,12 @@ export default function App() {
     if (el) el.scrollTop = el.scrollHeight;
   }, [liveReasoningShown]);
 
-  // The composer is disabled while a turn runs (N-17), which blurs it — the
-  // browser doesn't restore focus on its own once it re-enables, so do it
-  // explicitly whenever a turn finishes.
+  // Puts the caret back in the composer when it becomes usable: on connect,
+  // on picking a thread, and when a turn finishes. The turn case originally
+  // existed because the composer was disabled mid-turn and disabling blurs
+  // it; it now stays enabled (a send during a turn steers it instead), so
+  // that case is merely a convenience for when focus drifted elsewhere while
+  // waiting.
   const composerInputRef = useRef<HTMLTextAreaElement>(null);
   useEffect(() => {
     if (connState === "connected" && activeThreadId && !activeTurnId) {
@@ -2020,7 +2024,11 @@ export default function App() {
 
   const send = async () => {
     const text = input.trim();
-    if ((!text && pastedImages.length === 0) || !activeThreadId || activeTurnId || imageSavesPending > 0) return;
+    // A running turn no longer blocks the composer: the send becomes a
+    // turn/steer into that turn instead (see composerRequest). imageSavesPending
+    // still does, since a half-written temp image would be sent as a path that
+    // does not exist yet.
+    if ((!text && pastedImages.length === 0) || !activeThreadId || imageSavesPending > 0) return;
 
     // "/name <arg>" typed out and submitted with Enter (not selected from
     // the dropdown, which already handled parameterless commands earlier).
@@ -2041,6 +2049,50 @@ export default function App() {
     pastedImagesRef.current = [];
     for (const img of images) URL.revokeObjectURL(img.previewUrl);
     setErrorBanner(null);
+    const steeringTurnId = activeTurnId;
+    const request = composerRequest({
+      threadId: activeThreadId,
+      activeTurnId: steeringTurnId,
+      input: [
+        ...images.map((img) => ({ type: "localImage" as const, path: img.wslPath })),
+        ...(text ? [{ type: "text" as const, text, text_elements: [] as never[] }] : []),
+      ],
+      turnFields: turnModelFields(provider, modelOverride, reasoningEffort, serviceTier),
+      summary: REASONING_SUMMARY,
+    });
+
+    if (steeringTurnId) {
+      // Steering feeds an already-running turn, so none of the new-turn
+      // bookkeeping applies: the journal already has this turn marked
+      // started (a second entry would look like a second in-flight turn to
+      // crash recovery), and the elapsed timer must keep counting the turn
+      // that is still going. Images attach to the turn already in flight so
+      // they are cleaned up with it at turn/completed.
+      if (images.length > 0) {
+        const existing = turnImagesRef.current.get(steeringTurnId) ?? [];
+        turnImagesRef.current.set(steeringTurnId, [...existing, ...images]);
+      }
+      try {
+        await invoke("rpc_request", { method: request.method, params: request.params });
+      } catch (e) {
+        // The turn may simply have finished between render and click, which
+        // the server rejects via the expectedTurnId precondition. Either way
+        // the message never reached the model, so hand the text back rather
+        // than making the user retype it.
+        if (images.length > 0) {
+          const remaining = (turnImagesRef.current.get(steeringTurnId) ?? []).filter(
+            (img) => !images.includes(img)
+          );
+          if (remaining.length > 0) turnImagesRef.current.set(steeringTurnId, remaining);
+          else turnImagesRef.current.delete(steeringTurnId);
+          for (const image of images) deletePastedImageFile(image);
+        }
+        setInput(text);
+        setErrorBanner(`turn/steer failed: ${rpcErrorText(e)}`);
+      }
+      return;
+    }
+
     // The previous turn's frozen duration stops being the answer to "how long
     // is this taking" the moment a new send goes out -- clear it here rather
     // than at turn/started, so it does not linger through the round trip.
@@ -2051,19 +2103,7 @@ export default function App() {
     journalPrepare(activeThreadId, requestId);
     if (images.length > 0) imagesAwaitingTurnRef.current = images;
     try {
-      // N-17: sends are serialized — input is disabled while a turn runs.
-      await invoke("rpc_request", {
-        method: "turn/start",
-        params: {
-          threadId: activeThreadId,
-          input: [
-            ...images.map((img) => ({ type: "localImage", path: img.wslPath })),
-            ...(text ? [{ type: "text", text, text_elements: [] }] : []),
-          ],
-          ...turnModelFields(provider, modelOverride, reasoningEffort, serviceTier),
-          summary: REASONING_SUMMARY,
-        },
-      });
+      await invoke("rpc_request", { method: request.method, params: request.params });
       journalMarkSent(activeThreadId, requestId);
     } catch (e) {
       if (shouldAbortJournal(rpcErrorKind(e))) {
@@ -2633,11 +2673,13 @@ export default function App() {
                 onKeyDown={onInputKeyDown}
                 onPaste={handleComposerPaste}
                 placeholder={
-                  activeThreadId
-                    ? "メッセージを入力（Enterで送信 / Shift+Enterで改行 / \"/\"でコマンド / 画像はCtrl+Vで貼り付け）"
-                    : "先にスレッドを選択または作成してください"
+                  !activeThreadId
+                    ? "先にスレッドを選択または作成してください"
+                    : activeTurnId
+                      ? "作業中のAIに割り込んで指示できます（状況の質問 / 方針の変更 / 条件の追加）"
+                      : "メッセージを入力（Enterで送信 / Shift+Enterで改行 / \"/\"でコマンド / 画像はCtrl+Vで貼り付け）"
                 }
-                disabled={connState !== "connected" || !activeThreadId || !!activeTurnId}
+                disabled={connState !== "connected" || !activeThreadId}
                 rows={3}
               />
               <button
@@ -2645,11 +2687,15 @@ export default function App() {
                 disabled={
                   (!input.trim() && pastedImages.length === 0) ||
                   !activeThreadId ||
-                  !!activeTurnId ||
                   imageSavesPending > 0
                 }
+                title={
+                  activeTurnId
+                    ? "実行中のターンに割り込んで指示を差し込みます（ターンは止まりません）"
+                    : undefined
+                }
               >
-                送信
+                {activeTurnId ? "割り込み" : "送信"}
               </button>
             </div>
           </div>
