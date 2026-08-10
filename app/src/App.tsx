@@ -1,4 +1,5 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import ReactMarkdown from "react-markdown";
@@ -3323,7 +3324,16 @@ function MarkdownLink({
       >
         {children}
       </a>
-      {menuPos && (
+      {/* Portalled to <body> rather than rendered in place. The menu is
+          position: fixed, but `.msg` carries content-visibility: auto, which
+          implies contain: layout style paint -- and a paint-contained element
+          becomes the containing block for fixed-position descendants *and*
+          clips them. Left inline, the menu was laid out against the message
+          bubble and cut off at its edges, which looked exactly like
+          right-click not working at all (the handler was firing the whole
+          time). Anything else fixed-position added under a message needs the
+          same treatment. */}
+      {menuPos && createPortal(
         <>
           <div className="context-menu-backdrop" onClick={() => setMenuPos(null)} />
           <div className="context-menu" style={{ left: menuPos.x, top: menuPos.y }}>
@@ -3364,7 +3374,8 @@ function MarkdownLink({
               リンクアドレスをコピー
             </button>
           </div>
-        </>
+        </>,
+        document.body
       )}
     </>
   );
