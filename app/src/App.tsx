@@ -1065,6 +1065,16 @@ export default function App() {
     }
   }, [showArchived]);
 
+  // The notification listener calls this on turn/completed. Reached through a
+  // ref rather than the effect's dependency array: refreshThreads is rebuilt
+  // whenever showArchived changes, and naming it as a dependency would tear
+  // down and re-register every Tauri listener just because the archived view
+  // was toggled -- with a window where notifications could be missed.
+  const refreshThreadsRef = useRef(refreshThreads);
+  refreshThreadsRef.current = refreshThreads;
+  const threadsRef = useRef<Thread[]>([]);
+  threadsRef.current = threads;
+
   // F-09a: fetch the next page and append. Dedupes by id in case a thread
   // was created/moved between page fetches and ends up straddling pages.
   const loadMoreThreads = useCallback(async () => {
@@ -1183,6 +1193,21 @@ export default function App() {
             journalMarkCompleted(p.threadId);
             notifyTurnEndIfIdle();
             void fetchUsage(); // keep the footer badge current after each turn
+            // thread/list does not report a thread until its first turn has
+            // completed (verified against a live app-server: absent right
+            // after thread/start and again right after turn/start is accepted,
+            // present once turn/completed arrives). newThread's own refresh
+            // therefore always missed the thread it had just created, and
+            // nothing refreshed afterwards -- so a new thread stayed invisible
+            // in the sidebar until a reconnect, and navigating away from it
+            // meant losing the way back to it.
+            //
+            // Only when the thread is actually missing: refreshThreads replaces
+            // the whole list with the first page, so doing it after every turn
+            // would silently collapse anything loaded via さらに読み込む.
+            if (!threadsRef.current.some((t) => t.id === p.threadId)) {
+              void refreshThreadsRef.current();
+            }
             break;
           }
           case "item/started": {
