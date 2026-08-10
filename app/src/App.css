@@ -174,7 +174,24 @@ body { background: var(--bg); color: var(--text); }
   padding: 9px 13px; border-radius: 8px;
   word-break: break-word;
   background: var(--agent-bubble); border: 1px solid var(--border);
+  /* Lets the engine skip layout and paint for messages scrolled out of view.
+     The threads in real use here reach ~20,000 items, where laying out every
+     one of them on each frame is what made typing feel heavy. `auto` on the
+     intrinsic size means a message keeps its real measured height once it has
+     been on screen, so scrolling back over it does not jump; the 120px is only
+     the guess for ones never yet rendered. */
+  content-visibility: auto;
+  contain-intrinsic-size: auto 120px;
 }
+/* Sits above the composer, offset from the transcript's own copy button. */
+.jump-latest {
+  position: absolute; bottom: 118px; right: 14px; z-index: 5;
+  padding: 5px 12px; font-size: 12px; line-height: 1.2;
+  background: var(--accent); color: #fff;
+  border: none; border-radius: 14px;
+  cursor: pointer; box-shadow: 0 2px 6px rgba(0, 0, 0, 0.25);
+}
+.jump-latest:hover { filter: brightness(1.1); }
 /* Per-message copy button. Hidden (and click-through) until the message is
    hovered, so it never covers text the user is only reading. */
 .msg-copy {

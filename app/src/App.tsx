@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import ReactMarkdown from "react-markdown";
@@ -56,6 +56,7 @@ import { forcedEffortForModel } from "./modelEffort";
 import { turnModelFields } from "./turnModelFields";
 import { creditBadge } from "./creditBadge";
 import { composerRequest } from "./composerRequest";
+import { isNearBottom } from "./scrollFollow";
 import { IDLE_POLL_INTERVAL_MS, inputDetected, shouldNotifyOnTurnEnd } from "./idleNotice";
 import { formatElapsed } from "./formatElapsed";
 import { itemToText, transcriptToText } from "./transcriptCopy";
@@ -683,11 +684,72 @@ export default function App() {
 
   useEffect(() => stopFlashing, [stopFlashing]);
 
+  // Transcript tail-following. Kept in a ref, not state: it is read inside the
+  // scroll handler and the post-update effect, and re-rendering the transcript
+  // on every scroll event is exactly the cost this change is trying to avoid.
   const transcriptRef = useRef<HTMLDivElement>(null);
+  const followTailRef = useRef(true);
+  const [newOutputBelow, setNewOutputBelow] = useState(false);
+
+  const scrollToLatest = useCallback(() => {
+    const el = transcriptRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+    followTailRef.current = true;
+    setNewOutputBelow(false);
+  }, []);
+
+  const onTranscriptScroll = useCallback(() => {
+    const el = transcriptRef.current;
+    if (!el) return;
+    const following = isNearBottom(el);
+    followTailRef.current = following;
+    // Scrolling back down to the bottom re-arms following and clears the
+    // notice without needing the button.
+    if (following) setNewOutputBelow(false);
+  }, []);
+
+  // New output only pulls the view down when the reader was already at the
+  // bottom. Otherwise it stays put and the "↓ 最新" button appears -- including
+  // when the turn ends, since yanking someone out of the history they are
+  // reading is the behaviour being fixed, not something to do once more at the
+  // end.
   useEffect(() => {
     const el = transcriptRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
+    if (!el) return;
+    if (followTailRef.current) el.scrollTop = el.scrollHeight;
+    else if (items.length > 0) setNewOutputBelow(true);
   }, [items, activeTurnId]);
+
+  // A different thread starts at its own bottom rather than inheriting the
+  // previous one's reading position.
+  useEffect(() => {
+    followTailRef.current = true;
+    setNewOutputBelow(false);
+  }, [activeThreadId]);
+
+  // Built once per items change instead of once per render. TranscriptItem is
+  // already memoized, but without this the composer still paid for creating
+  // one element per item on every keystroke -- and the threads actually in use
+  // here run to ~20,000 items (reasoning, tool calls and their outputs), which
+  // is where the "Japanese input feels sluggish, and it depends which thread"
+  // report comes from. Holding the array identity lets React skip the whole
+  // subtree instead of walking it.
+  const transcriptItems = useMemo(
+    () =>
+      items.map((di) => (
+        <TranscriptItem
+          key={di.key}
+          di={di}
+          distro={distro}
+          cwd={projectCwd}
+          connectionMode={connectionMode}
+          onLinkError={setErrorBanner}
+          onError={setErrorBanner}
+        />
+      )),
+    [items, distro, projectCwd, connectionMode]
+  );
 
   // The live reasoning pane follows its own tail, independently of the
   // transcript's scroll position.
@@ -2579,20 +2641,27 @@ export default function App() {
           >
             {copiedAll ? "✅" : "📋"}
           </button>
-          <div className={`transcript${activeTurnId ? " turn-active" : ""}`} ref={transcriptRef}>
-            {items.map((di) => (
-              <TranscriptItem
-                key={di.key}
-                di={di}
-                distro={distro}
-                cwd={projectCwd}
-                connectionMode={connectionMode}
-                onLinkError={setErrorBanner}
-                onError={setErrorBanner}
-              />
-            ))}
+          <div
+            className={`transcript${activeTurnId ? " turn-active" : ""}`}
+            ref={transcriptRef}
+            onScroll={onTranscriptScroll}
+          >
+            {transcriptItems}
             {activeTurnId && <div className="working">Codex is working…</div>}
           </div>
+          {/* Only while the reader is parked in the history and output has
+              arrived below them -- the way back down, since new output no
+              longer drags the view along. */}
+          {newOutputBelow && (
+            <button
+              type="button"
+              className="jump-latest"
+              onClick={scrollToLatest}
+              title="最新の出力までスクロールし、以降は自動で追従します"
+            >
+              ↓ 最新
+            </button>
+          )}
           {/* Temporary pane: exists only while the turn that produced this text
               is still running. Collapsed state persists, the text never does. */}
           {activeTurnId && liveReasoningShown && (
