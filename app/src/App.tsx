@@ -685,48 +685,86 @@ export default function App() {
 
   useEffect(() => stopFlashing, [stopFlashing]);
 
-  // Transcript tail-following. Kept in a ref, not state: it is read inside the
-  // scroll handler and the post-update effect, and re-rendering the transcript
-  // on every scroll event is exactly the cost this change is trying to avoid.
+  // Transcript tail-following.
+  //
+  // `atBottom` is derived from the live scroll position rather than latched
+  // when new output arrives. The first version latched a "new output below"
+  // flag inside the items effect, and that could strand the view: because
+  // .msg uses content-visibility, offscreen heights are estimates, so
+  // scrollTop = scrollHeight can land a little short once the browser
+  // measures for real. The scroll event that follows then reads "not at the
+  // bottom" and silently drops following -- and if no further items arrive
+  // (the end of a turn), the flag that shows the button never gets set. The
+  // result was no auto-follow and no button, which is exactly "it stops and
+  // I have to scroll by hand". Deriving both from one measurement cannot
+  // reach that state.
   const transcriptRef = useRef<HTMLDivElement>(null);
   const followTailRef = useRef(true);
-  const [newOutputBelow, setNewOutputBelow] = useState(false);
+  const [atBottom, setAtBottom] = useState(true);
+
+  // Single place that measures; both the follow decision and the button read
+  // the same answer.
+  const syncScrollState = useCallback(() => {
+    const el = transcriptRef.current;
+    if (!el) return;
+    const near = isNearBottom(el);
+    followTailRef.current = near;
+    setAtBottom(near);
+  }, []);
 
   const scrollToLatest = useCallback(() => {
     const el = transcriptRef.current;
     if (!el) return;
     el.scrollTop = el.scrollHeight;
     followTailRef.current = true;
-    setNewOutputBelow(false);
+    setAtBottom(true);
   }, []);
 
-  const onTranscriptScroll = useCallback(() => {
-    const el = transcriptRef.current;
-    if (!el) return;
-    const following = isNearBottom(el);
-    followTailRef.current = following;
-    // Scrolling back down to the bottom re-arms following and clears the
-    // notice without needing the button.
-    if (following) setNewOutputBelow(false);
-  }, []);
-
-  // New output only pulls the view down when the reader was already at the
-  // bottom. Otherwise it stays put and the "↓ 最新" button appears -- including
-  // when the turn ends, since yanking someone out of the history they are
-  // reading is the behaviour being fixed, not something to do once more at the
-  // end.
+  // New output pulls the view down only when the reader was already at the
+  // bottom. Otherwise the position is left alone and the "↓ 最新" button is
+  // the way back -- including when the turn ends, since yanking someone out
+  // of the history they are reading is the behaviour being fixed, not
+  // something to do once more at the end.
   useEffect(() => {
     const el = transcriptRef.current;
     if (!el) return;
-    if (followTailRef.current) el.scrollTop = el.scrollHeight;
-    else if (items.length > 0) setNewOutputBelow(true);
-  }, [items, activeTurnId]);
+    if (!followTailRef.current) {
+      syncScrollState();
+      return;
+    }
+    el.scrollTop = el.scrollHeight;
+    // Re-assert after layout: with content-visibility the first assignment
+    // is against estimated heights, so the real bottom often moves once the
+    // newly revealed content is measured. Without this second pass the view
+    // drifts off the bottom and following turns itself off.
+    const frame = requestAnimationFrame(() => {
+      const current = transcriptRef.current;
+      if (current && followTailRef.current) current.scrollTop = current.scrollHeight;
+      syncScrollState();
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [items, activeTurnId, syncScrollState]);
+
+  // The transcript's height changes without any scrolling when the 推論経過
+  // pane appears or disappears mid-turn, or the window is resized. That moves
+  // where "the bottom" is, but fires no scroll event, so neither the follow
+  // decision nor the button would notice on their own.
+  useEffect(() => {
+    const el = transcriptRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(() => {
+      if (followTailRef.current) el.scrollTop = el.scrollHeight;
+      syncScrollState();
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [syncScrollState]);
 
   // A different thread starts at its own bottom rather than inheriting the
   // previous one's reading position.
   useEffect(() => {
     followTailRef.current = true;
-    setNewOutputBelow(false);
+    setAtBottom(true);
   }, [activeThreadId]);
 
   // Built once per items change instead of once per render. TranscriptItem is
@@ -2676,15 +2714,16 @@ export default function App() {
           <div
             className={`transcript${activeTurnId ? " turn-active" : ""}`}
             ref={transcriptRef}
-            onScroll={onTranscriptScroll}
+            onScroll={syncScrollState}
           >
             {transcriptItems}
             {activeTurnId && <div className="working">Codex is working…</div>}
           </div>
-          {/* Only while the reader is parked in the history and output has
-              arrived below them -- the way back down, since new output no
-              longer drags the view along. */}
-          {newOutputBelow && (
+          {/* Shown whenever the view is away from the bottom, not only when
+              new output happened to arrive while it was. Tying it to arrival
+              was what left the button missing in the one state that needs it
+              most -- stopped following, nothing new coming. */}
+          {!atBottom && items.length > 0 && (
             <button
               type="button"
               className="jump-latest"
