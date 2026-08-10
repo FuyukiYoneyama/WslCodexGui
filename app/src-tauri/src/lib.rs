@@ -579,6 +579,49 @@ struct OllamaModelInfo {
 
 const OLLAMA_WINDOWS_ROOT: &str = "http://127.0.0.1:11434";
 
+/// Turn a failed `curl.exe` run into something the user can act on.
+///
+/// The old message was `curl.exe exited with exit code: 7`, which names
+/// neither the address that was tried nor what code 7 means. That is the
+/// worst case for the failure people actually hit -- Ollama *is* installed
+/// and running, just not where this looked (a different port, or bound to an
+/// address other than loopback). Without the URL in the message there is
+/// nothing to compare against, so the report becomes "it says Ollama isn't
+/// running, but it is".
+///
+/// Codes are curl's documented exit statuses; anything unrecognised falls
+/// through to the raw code plus whatever curl wrote to stderr, which is still
+/// strictly more than before because the URL is now attached.
+fn ollama_curl_error(url: &str, code: Option<i32>, stderr: &str) -> String {
+    let detail = stderr.trim();
+    let explanation = match code {
+        Some(6) => Some("接続先のホスト名を解決できませんでした。"),
+        Some(7) => Some(
+            "接続を拒否されました。Ollamaが起動していないか、別のアドレス・ポートで待ち受けています。",
+        ),
+        Some(28) => Some("接続がタイムアウトしました。"),
+        Some(52) => Some("接続はできましたが、応答が空でした。"),
+        _ => None,
+    };
+    match explanation {
+        Some(explanation) => format!(
+            "{url} へ接続できませんでした: {explanation}\n\
+             `curl {url}` をPowerShellで実行すると同じ結果を再現できます。\
+             別のポートで動かしている場合は、そちらのアドレスを確認してください。"
+        ),
+        None => {
+            let code = code
+                .map(|c| c.to_string())
+                .unwrap_or_else(|| "不明".to_string());
+            if detail.is_empty() {
+                format!("{url} への問い合わせに失敗しました（curl 終了コード {code}）。")
+            } else {
+                format!("{url} への問い合わせに失敗しました（curl 終了コード {code}）: {detail}")
+            }
+        }
+    }
+}
+
 /// List locally pulled Ollama models (name + real context length) from
 /// Ollama's native /api/tags (not the OpenAI-compat /v1/models codex itself
 /// queries, which is why codex falls back to generic metadata for unknown
@@ -588,26 +631,35 @@ const OLLAMA_WINDOWS_ROOT: &str = "http://127.0.0.1:11434";
 /// cross-origin request at all.
 #[tauri::command]
 async fn list_ollama_models() -> Result<Vec<OllamaModelInfo>, String> {
+    // Every failure below names the URL that was tried. "Ollama is installed
+    // and running, but this says it isn't" is only diagnosable if the message
+    // says where it looked.
+    let url = format!("{OLLAMA_WINDOWS_ROOT}/api/tags");
     let output = tokio::process::Command::new("curl.exe")
-        .args(["-sS", &format!("{OLLAMA_WINDOWS_ROOT}/api/tags")])
+        .args(["-sS", &url])
         .output()
         .await
-        .map_err(|e| format!("failed to run curl.exe: {e}"))?;
+        .map_err(|e| format!("curl.exe を実行できませんでした（{url} への問い合わせ）: {e}"))?;
     if !output.status.success() {
-        let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        return Err(if detail.is_empty() {
-            format!("curl.exe exited with {}", output.status)
-        } else {
-            format!("curl.exe exited with {}: {detail}", output.status)
-        });
+        return Err(ollama_curl_error(
+            &url,
+            output.status.code(),
+            &String::from_utf8_lossy(&output.stderr),
+        ));
     }
     let body = String::from_utf8_lossy(&output.stdout);
-    let json: Value =
-        serde_json::from_str(&body).map_err(|e| format!("invalid JSON from Ollama: {e}"))?;
-    let models = json
-        .get("models")
-        .and_then(|v| v.as_array())
-        .ok_or("unexpected response shape from Ollama /api/tags")?;
+    let json: Value = serde_json::from_str(&body).map_err(|e| {
+        format!(
+            "{url} からの応答をJSONとして解釈できませんでした: {e}\n\
+             そのアドレスでOllama以外のサービスが待ち受けている可能性があります。"
+        )
+    })?;
+    let models = json.get("models").and_then(|v| v.as_array()).ok_or_else(|| {
+        format!(
+            "{url} は応答しましたが、Ollamaのモデル一覧の形式ではありませんでした（`models` が見つかりません）。\n\
+             そのアドレスで別のサービスが待ち受けているか、Ollamaのバージョンが想定と異なる可能性があります。"
+        )
+    })?;
     let mut result: Vec<OllamaModelInfo> = models
         .iter()
         .filter_map(|m| {
@@ -907,9 +959,56 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::{
-        ollama_root_for_host, parse_default_gateway, pasted_image_filename,
+        ollama_curl_error, ollama_root_for_host, parse_default_gateway, pasted_image_filename,
         pasted_image_filename_native, strip_wsl_unc, validate_distro, wsl_exec_args,
     };
+
+    const URL: &str = "http://127.0.0.1:11434/api/tags";
+
+    // The whole point of the message: someone whose Ollama *is* running has to
+    // be able to see that this looked somewhere else.
+    #[test]
+    fn every_curl_failure_names_the_address_that_was_tried() {
+        for code in [Some(6), Some(7), Some(28), Some(52), Some(99), None] {
+            let message = ollama_curl_error(URL, code, "");
+            assert!(
+                message.contains(URL),
+                "code {code:?} produced a message without the URL: {message}"
+            );
+        }
+    }
+
+    #[test]
+    fn connection_refused_says_so_instead_of_exit_code_7() {
+        let message = ollama_curl_error(URL, Some(7), "curl: (7) Failed to connect");
+        assert!(message.contains("接続を拒否"));
+        // Names the two things worth checking, since "is it running?" alone is
+        // useless to someone who already started it.
+        assert!(message.contains("起動していない"));
+        assert!(message.contains("ポート"));
+        assert!(!message.contains("exit code"));
+    }
+
+    #[test]
+    fn unknown_codes_keep_the_raw_code_and_stderr() {
+        let message = ollama_curl_error(URL, Some(99), "curl: (99) something new");
+        assert!(message.contains("99"));
+        assert!(message.contains("something new"));
+    }
+
+    #[test]
+    fn a_missing_exit_code_is_reported_rather_than_dropped() {
+        // Killed by a signal: status.code() is None.
+        let message = ollama_curl_error(URL, None, "");
+        assert!(message.contains("不明"));
+        assert!(message.contains(URL));
+    }
+
+    #[test]
+    fn empty_stderr_does_not_leave_a_dangling_colon() {
+        let message = ollama_curl_error(URL, Some(99), "   ");
+        assert!(message.trim_end().ends_with('。'), "got: {message}");
+    }
 
     #[test]
     fn parses_wsl_nat_gateway_from_default_route() {

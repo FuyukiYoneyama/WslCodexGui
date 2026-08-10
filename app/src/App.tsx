@@ -1708,7 +1708,13 @@ export default function App() {
       const models = await invoke<{ name: string; context_length: number | null }[]>("list_ollama_models");
       setOllamaModels(models.map((m) => ({ name: m.name, contextLength: m.context_length })));
     } catch (e) {
-      setErrorBanner(`Ollamaのモデル一覧取得に失敗しました（起動していますか？）: ${e}`);
+      // Stays a banner rather than a quiet inline notice: the user has just
+      // chosen Ollama, so a failure here is a real problem to surface, not an
+      // optional feature being absent. The actionable part (which address was
+      // tried, what the failure means) comes from list_ollama_models itself --
+      // the old "（起動していますか？）" here was worse than useless to the
+      // person whose Ollama is running and reachable somewhere else.
+      setErrorBanner(`Ollamaのモデル一覧を取得できませんでした。\n${e}`);
     } finally {
       setOllamaModelsLoading(false);
     }
