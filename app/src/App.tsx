@@ -807,10 +807,18 @@ export default function App() {
   // waiting.
   const composerInputRef = useRef<HTMLTextAreaElement>(null);
   useEffect(() => {
-    if (connState === "connected" && activeThreadId && !activeTurnId) {
-      composerInputRef.current?.focus();
-    }
-  }, [activeTurnId, connState, activeThreadId]);
+    if (connState !== "connected" || !activeThreadId) return;
+    // Deliberately NOT re-focused when a turn ends. That existed because the
+    // composer used to be disabled while a turn ran, and disabling blurs it --
+    // a transition that no longer happens (a send during a turn steers it
+    // instead). What remained was focus() on an element that usually already
+    // had focus, once per turn, and in WebView2 that re-initialises the IME
+    // composition context: the candidate window loses its anchor and the text
+    // being typed lands at the desktop's top-left corner. Steering made it
+    // reachable at the worst moment, mid-composition.
+    if (document.activeElement === composerInputRef.current) return;
+    composerInputRef.current?.focus();
+  }, [connState, activeThreadId]);
 
   // KEEP THIS. It looks like dead/pointless code in isolation (focus a
   // hidden input, then immediately blur it) — that's exactly the shape of
