@@ -58,6 +58,7 @@ import { turnModelFields } from "./turnModelFields";
 import { creditBadge } from "./creditBadge";
 import { composerRequest } from "./composerRequest";
 import { isNearBottom } from "./scrollFollow";
+import { turnErrorNotice, type TurnErrorNotice, type TurnErrorParams } from "./turnErrorNotice";
 import { IDLE_POLL_INTERVAL_MS, inputDetected, shouldNotifyOnTurnEnd } from "./idleNotice";
 import { formatElapsed } from "./formatElapsed";
 import { itemToText, transcriptToText } from "./transcriptCopy";
@@ -383,6 +384,10 @@ export default function App() {
   const [pastedImages, setPastedImages] = useState<PastedImage[]>([]);
   const [imageSavesPending, setImageSavesPending] = useState(0);
   const [errorBanner, setErrorBanner] = useState<string | null>(null);
+  // A retryable `error` notification: codex reconnecting mid-turn. Separate
+  // from errorBanner because it is not a failure -- it disappears on its own
+  // the moment work resumes, rather than sitting there until dismissed.
+  const [retryNotice, setRetryNotice] = useState<TurnErrorNotice | null>(null);
   const [stderrLog, setStderrLog] = useState<string[]>([]);
 
   // "/" command palette (composer autocomplete).
@@ -1197,6 +1202,12 @@ export default function App() {
       listen<Notification>("codex:notification", (ev) => {
         if (!isCurrent(ev.payload.connectionId)) return; // stale connection's event
         const { method, params } = ev.payload;
+        // Any notification other than another `error` means the stream is
+        // alive again, so a "reconnecting" notice has answered itself. This is
+        // the half the old handling lacked: the banner had no way to retract
+        // itself once codex recovered, so it kept reporting a failure through
+        // the rest of a turn that was working fine.
+        if (method !== "error") setRetryNotice(null);
         const threadId = (params as { threadId?: string } | undefined)?.threadId;
         // Image cleanup is connection-wide, so process turn lifecycle even
         // when its thread is not the one currently displayed.
@@ -1332,7 +1343,18 @@ export default function App() {
             break;
           }
           case "error": {
-            setErrorBanner(JSON.stringify(params));
+            const notice = turnErrorNotice(params as TurnErrorParams);
+            if (notice.transient) {
+              // codex is still retrying, so nothing has failed yet. Observed
+              // twice against OpenAI: both times the reconnect worked and the
+              // turn continued, while the old red banner sat there claiming a
+              // failure. Shown quietly instead, and cleared the moment any
+              // output arrives (see the item/* cases) or the turn ends.
+              setRetryNotice(notice);
+            } else {
+              setRetryNotice(null);
+              setErrorBanner(notice.detail ? `${notice.summary}\n${notice.detail}` : notice.summary);
+            }
             break;
           }
           default:
@@ -2530,6 +2552,19 @@ export default function App() {
       {errorBanner && (
         <div className="banner" onClick={() => setErrorBanner(null)}>
           {errorBanner}
+        </div>
+      )}
+      {/* Not the red banner: codex has not failed, it is retrying. Clears
+          itself as soon as anything else arrives. The full server text —
+          including the request id support would ask for — is on hover. */}
+      {retryNotice && (
+        <div
+          className="retry-notice"
+          title={retryNotice.detail ?? undefined}
+          onClick={() => setRetryNotice(null)}
+        >
+          ⟳ 接続が切れたため再接続しています（{retryNotice.summary}）
+          {retryNotice.detail && <span className="retry-notice-hint">詳細はカーソルを重ねてください</span>}
         </div>
       )}
 
