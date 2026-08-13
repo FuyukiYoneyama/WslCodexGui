@@ -59,6 +59,8 @@ import { creditBadge } from "./creditBadge";
 import { composerRequest } from "./composerRequest";
 import { isNearBottom } from "./scrollFollow";
 import { turnErrorNotice, type TurnErrorNotice, type TurnErrorParams } from "./turnErrorNotice";
+import { collapsePreview } from "./collapsePreview";
+import { elapsedMs, pauseClock, resumeClock, startClock, type TurnClock } from "./turnClock";
 import { IDLE_POLL_INTERVAL_MS, inputDetected, shouldNotifyOnTurnEnd } from "./idleNotice";
 import { formatElapsed } from "./formatElapsed";
 import { itemToText, transcriptToText } from "./transcriptCopy";
@@ -517,8 +519,13 @@ export default function App() {
   // on screen afterwards -- it used to vanish the instant work finished,
   // which is exactly when you want to read it. null means "nothing to show":
   // cleared by the next send, a thread switch, or a disconnect.
-  const turnStartTimeRef = useRef<number | null>(null);
+  // Holds the shifted start plus any in-progress approval pause; see
+  // turnClock.ts for why pausing moves the start rather than accumulating a
+  // separate total.
+  const turnStartTimeRef = useRef<TurnClock | null>(null);
   const [elapsedTime, setElapsedTime] = useState<number | null>(null);
+  // When the currently displayed approval dialog appeared, so it can say so.
+  const approvalShownAtRef = useRef<Map<string, number>>(new Map());
 
   // Tags the Connection currently considered "live". Every Rust-emitted
   // event carries connectionId; events from a Connection we've already
@@ -632,12 +639,24 @@ export default function App() {
   useEffect(() => {
     if (!activeTurnId || !turnStartTimeRef.current) return;
     const interval = window.setInterval(() => {
-      if (turnStartTimeRef.current) {
-        setElapsedTime(Date.now() - turnStartTimeRef.current);
-      }
+      const clock = turnStartTimeRef.current;
+      // elapsedMs holds still on its own while paused, so no branch here.
+      if (clock) setElapsedTime(elapsedMs(clock, Date.now()));
     }, 100);
     return () => window.clearInterval(interval);
   }, [activeTurnId]);
+
+  // An open approval dialog means codex has stopped and is waiting on a
+  // person, so the turn timer stops with it -- otherwise stepping away with a
+  // dialog open inflates the figure by however long the break was.
+  useEffect(() => {
+    const waiting = approvals.length > 0;
+    const clock = turnStartTimeRef.current;
+    if (!clock) return;
+    const now = Date.now();
+    turnStartTimeRef.current = waiting ? pauseClock(clock, now) : resumeClock(clock, now);
+    setElapsedTime(elapsedMs(turnStartTimeRef.current, now));
+  }, [approvals.length]);
 
   // Switching threads makes the previous thread's timing meaningless.
   useEffect(() => {
@@ -1227,7 +1246,7 @@ export default function App() {
             const p = parseOrReport(TurnStartedNotificationSchema, params, "turn/started", setErrorBanner);
             if (!p) break;
             setActiveTurnId(p.turn.id);
-            turnStartTimeRef.current = Date.now();
+            turnStartTimeRef.current = startClock(Date.now());
             setLiveReasoning(null); // the pane belongs to one turn only
             stopFlashing(); // a previous turn's notice is stale once work resumes
             journalMarkStarted(p.threadId, p.turn.id);
@@ -1240,7 +1259,7 @@ export default function App() {
             // Freeze the exact duration here rather than keeping whatever the
             // 100ms ticker last wrote, which can be that much short.
             if (turnStartTimeRef.current) {
-              setElapsedTime(Date.now() - turnStartTimeRef.current);
+              setElapsedTime(elapsedMs(turnStartTimeRef.current, Date.now()));
             }
             turnStartTimeRef.current = null;
             setLiveReasoning(null); // the transcript's reasoning item takes over
@@ -1372,6 +1391,10 @@ export default function App() {
         // modal; anything else would render as a confusing/blank approval
         // card instead of being visibly unhandled.
         if (isApprovalMethod(req.method)) {
+          // Stamped on arrival rather than on first render: the dialog can sit
+          // unseen while the user is away, and the useful figure is when codex
+          // actually asked.
+          approvalShownAtRef.current.set(String(req.id), Date.now());
           setApprovals((prev) => [...prev, req as ServerRequest]);
           playApprovalBell();
         } else {
@@ -1852,6 +1875,7 @@ export default function App() {
       });
       // The request is consumed only after the response was written. On
       // failure it remains visible so the user can retry the same id.
+      approvalShownAtRef.current.delete(String(req.id));
       setApprovals((prev) => prev.filter((a) => a.id !== req.id));
     } catch (e) {
       setErrorBanner(`承認応答の送信に失敗: ${e}`);
@@ -2329,6 +2353,7 @@ export default function App() {
   };
 
   const approval = approvals[0];
+  const approvalShownAt = approval ? approvalShownAtRef.current.get(String(approval.id)) : undefined;
   const approvalParams = (approval?.params ?? {}) as CommandApprovalParams;
   const decisions: ApprovalDecision[] =
     approvalParams.availableDecisions ?? ["accept", "decline", "cancel"];
@@ -2890,6 +2915,11 @@ export default function App() {
         <div className="modal-backdrop">
           <div className="modal">
             <h3>Codexが承認を求めています</h3>
+            {approvalShownAt !== undefined && (
+              <span className="approval-time" title="この承認要求が届いた時刻。この間、経過時間の計測は止まっています">
+                {new Date(approvalShownAt).toLocaleTimeString()}
+              </span>
+            )}
             <p className="method">{approval.method}</p>
             {approvalParams.command && <pre>{approvalParams.command}</pre>}
             {approvalParams.cwd && <p className="cwd">cwd: {approvalParams.cwd}</p>}
@@ -3518,9 +3548,33 @@ function MessageBubble({
   children: React.ReactNode;
 }) {
   const [copied, setCopied] = useState(false);
+  // Collapsing is the reader's call, never inferred. The app does not decide
+  // that two messages say the same thing -- it only makes any one of them
+  // foldable, so a restatement can be tucked away without the transcript
+  // claiming it was not sent. Session-only on purpose: this is a reading
+  // position, not a property of the conversation, and persisting it would let
+  // a message start out hidden.
+  const [collapsed, setCollapsed] = useState(false);
   return (
-    <div className={`msg ${className}`}>
+    <div className={`msg ${className}${collapsed ? " collapsed" : ""}`}>
       {copyText && (
+        <button
+          type="button"
+          className="msg-collapse"
+          title={collapsed ? "このメッセージを展開" : "このメッセージを畳む"}
+          aria-label={collapsed ? "このメッセージを展開" : "このメッセージを畳む"}
+          aria-expanded={!collapsed}
+          onClick={() => setCollapsed((v) => !v)}
+        >
+          {collapsed ? "▶" : "▼"}
+        </button>
+      )}
+      {collapsed && (
+        <div className="msg-collapsed-preview" onClick={() => setCollapsed(false)}>
+          {collapsePreview(copyText)}
+        </div>
+      )}
+      {copyText && !collapsed && (
         <button
           type="button"
           className="msg-copy"
@@ -3539,7 +3593,7 @@ function MessageBubble({
           {copied ? "✅" : "📋"}
         </button>
       )}
-      {children}
+      {!collapsed && children}
     </div>
   );
 }
