@@ -3258,6 +3258,7 @@ export default function App() {
               <CreditPill rateLimits={usagePanel.rateLimits} />
             </button>
           )}
+          <ContextPill tokenUsage={threadTokenUsage} />
           {elapsedTime !== null && (
             <span
               className={`elapsed ${activeTurnId ? "" : "done"}`}
@@ -3302,6 +3303,29 @@ function UsagePill({ label, pct }: { label: string; pct: number | undefined }) {
   return (
     <span className={`usage-pill ${cls}`}>
       {label} 残{remaining}%
+    </span>
+  );
+}
+
+// Always-on footer readout of how full the model's context window is.
+// Codex CLI's own status line shows this as a running "context usage %" so
+// the user knows when a `/compact` (or new thread) is due before the app
+// forces a compaction mid-turn. We approximate "current context size" with
+// the *last* turn's total tokens (input + cached input + output +
+// reasoning) rather than the thread-lifetime `total`, since `total` keeps
+// growing turn over turn and would overstate usage relative to what's
+// actually sent to the model on the next turn.
+function ContextPill({ tokenUsage }: { tokenUsage: import("./types").ThreadTokenUsage | null }) {
+  if (!tokenUsage || !tokenUsage.modelContextWindow) return null;
+  const used = tokenUsage.last.totalTokens;
+  const pct = Math.min(100, Math.round((used / tokenUsage.modelContextWindow) * 100));
+  const cls = pct >= 85 ? "danger" : pct >= 70 ? "warn" : "";
+  return (
+    <span
+      className={`usage-pill ${cls}`}
+      title={`コンテキスト使用量: ${used.toLocaleString()} / ${tokenUsage.modelContextWindow.toLocaleString()} tokens\n70%以上で /compact 相当の整理を検討、85%以上で推奨`}
+    >
+      🧵 {pct}%
     </span>
   );
 }
