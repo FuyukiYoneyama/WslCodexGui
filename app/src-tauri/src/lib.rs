@@ -3,7 +3,7 @@ mod appserver;
 use appserver::{Connection, RpcFailure};
 use serde_json::{json, Value};
 use std::sync::Arc;
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, State};
 use tokio::sync::Mutex;
 
 #[cfg(windows)]
@@ -911,19 +911,16 @@ fn windows_path_to_wsl(path: String, distro: String) -> Result<String, String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Multiple windows/processes are intentionally allowed. codex app-server
+    // already refuses a second thread/resume on a thread another process has
+    // open (-32600 "already has an active writer") instead of corrupting
+    // anything, and two processes sharing this app's WebView2 profile folder
+    // were confirmed live (two-instance test, 2026-08-22) not to conflict.
+    // The remaining shared-profile risk -- localStorage settings clobbering
+    // each other -- is handled in the frontend by only cross-window-syncing
+    // append-only sets (projectPaths, acknowledgedCodexVersions), never a
+    // window's own active choice (connectionMode, provider, distro, ...).
     tauri::Builder::default()
-        // Must be registered first (tauri-plugin-single-instance requirement).
-        // A second launch hands its argv/cwd to this callback instead of
-        // starting its own WebView2/app-server -- avoids the localStorage
-        // journal race and duplicate app-server processes from running two
-        // windows against the same thread.
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            if let Some(window) = app.get_webview_window("main") {
-                let _ = window.unminimize();
-                let _ = window.show();
-                let _ = window.set_focus();
-            }
-        }))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState {

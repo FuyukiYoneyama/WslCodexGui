@@ -13,7 +13,15 @@ export function parseCodexCliVersion(userAgent: string): string | null {
 // a newer codex-cli could rename/remove a field this app depends on without
 // any semver rule catching it, so "confirmed" means "actually tried",
 // nothing more.
-export const CONFIRMED_CODEX_CLI_VERSIONS = ["0.144.5", "0.144.6"];
+export const CONFIRMED_CODEX_CLI_VERSIONS = [
+  "0.144.5",
+  "0.144.6",
+  "0.145.0",
+  "0.146.0",
+  "0.147.0",
+  "0.148.0",
+  "0.149.0",
+];
 
 export function isConfirmedCodexCliVersion(version: string): boolean {
   return CONFIRMED_CODEX_CLI_VERSIONS.includes(version);

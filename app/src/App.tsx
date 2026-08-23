@@ -510,6 +510,47 @@ export default function App() {
   distroRef.current = distro;
   const connectionModeRef = useRef(connectionMode);
   connectionModeRef.current = connectionMode;
+
+  // Cross-window settings sync: every window of this app shares one
+  // WebView2 profile, so they all read/write the same localStorage. Most
+  // persisted keys are a window's own *active choice* right now (which
+  // connection mode, which provider, which project is open) -- mirroring
+  // another window's write into those would rip control away from whichever
+  // window didn't make the change (window 1 on WSL/openai would get flipped
+  // to window 2's ollama pick). Only genuinely append-only sets are safe to
+  // sync: known project folders and acknowledged codex versions never
+  // conflict, they only grow, so merging instead of replacing loses nothing
+  // either window already knew, without ever overriding either window's own
+  // active selection.
+  useEffect(() => {
+    const parseStringArray = (raw: string | null): string[] => {
+      try {
+        const parsed = raw ? JSON.parse(raw) : [];
+        return Array.isArray(parsed) ? parsed.filter((v): v is string => typeof v === "string") : [];
+      } catch {
+        return [];
+      }
+    };
+    const merge = (prev: string[], incoming: string[]) =>
+      incoming.every((v) => prev.includes(v)) ? prev : [...new Set([...prev, ...incoming])].sort();
+
+    const handler = (e: StorageEvent) => {
+      if (e.storageArea !== localStorage) return;
+      switch (e.key) {
+        case "acknowledgedCodexVersions":
+          setAcknowledgedCodexVersions((prev) => merge(prev, parseStringArray(e.newValue)));
+          break;
+        case projectPathsStorageKey:
+          setProjectPaths((prev) => merge(prev, parseStringArray(e.newValue)));
+          break;
+        default:
+          break;
+      }
+    };
+    window.addEventListener("storage", handler);
+    return () => window.removeEventListener("storage", handler);
+  }, [projectPathsStorageKey]);
+
   const pastedImagesRef = useRef<PastedImage[]>([]);
   pastedImagesRef.current = pastedImages;
   const pasteGenerationRef = useRef(0);
@@ -2243,7 +2284,7 @@ export default function App() {
         ...images.map((img) => ({ type: "localImage" as const, path: img.wslPath })),
         ...(text ? [{ type: "text" as const, text, text_elements: [] as never[] }] : []),
       ],
-      turnFields: turnModelFields(provider, modelOverride, reasoningEffort, serviceTier),
+      turnFields: turnModelFields(provider, modelOverride, ollamaModel, reasoningEffort, serviceTier),
       summary: REASONING_SUMMARY,
     });
 
