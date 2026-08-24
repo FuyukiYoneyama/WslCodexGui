@@ -64,6 +64,7 @@ import { elapsedMs, pauseClock, resumeClock, startClock, type TurnClock } from "
 import { IDLE_POLL_INTERVAL_MS, inputDetected, shouldNotifyOnTurnEnd } from "./idleNotice";
 import { formatElapsed } from "./formatElapsed";
 import { itemToText, transcriptToText } from "./transcriptCopy";
+import { appendStreamingText, clearStreamingText, getStreamingText, useStreamingText } from "./streamingText";
 import {
   appendSummaryDelta,
   liveReasoningText,
@@ -223,7 +224,6 @@ function loadStringList(key: string, fallback: string[]): string[] {
 interface DisplayItem {
   key: string;
   item: ThreadItem;
-  streamingText?: string;
 }
 
 interface PastedImage extends ImageContext {
@@ -644,6 +644,13 @@ export default function App() {
   }, [deletePastedImageFile, discardSentImages]);
 
   // Delta batching (N-18): accumulate per-item text, flush on a ~33ms tick.
+  // Flushing into the streamingText store (not `setItems`) is load-bearing:
+  // an earlier version called setItems here, which rebuilt the whole
+  // (~20,000-entry, on real threads) items array every tick and forced
+  // React to reconcile the entire transcript at up to 30Hz during heavy
+  // streaming -- reproduced live as a full UI freeze, no button (including
+  // 切断) responding, on a large thread with active output. The store
+  // notifies only the one TranscriptItem subscribed to this itemId.
   const deltaBufRef = useRef<Map<string, string>>(new Map());
   const flushScheduledRef = useRef(false);
   const scheduleFlush = useCallback(() => {
@@ -655,13 +662,7 @@ export default function App() {
       if (buf.size === 0) return;
       const entries = new Map(buf);
       buf.clear();
-      setItems((prev) =>
-        prev.map((di) => {
-          const add = entries.get(di.item.id);
-          if (add === undefined) return di;
-          return { ...di, streamingText: (di.streamingText ?? "") + add };
-        })
-      );
+      for (const [itemId, add] of entries) appendStreamingText(itemId, add);
     }, 33);
   }, []);
 
@@ -1331,13 +1332,19 @@ export default function App() {
             const p = parseOrReport(ItemNotificationSchema, params, "item/started", setErrorBanner);
             if (!p) break;
             const item = p.item as unknown as ThreadItem;
-            setItems((prev) => [...prev, { key: item.id, item, streamingText: "" }]);
+            clearStreamingText(item.id); // defensive: no stale buffer from a reused id
+            setItems((prev) => [...prev, { key: item.id, item }]);
             break;
           }
           case "item/completed": {
             const p = parseOrReport(ItemNotificationSchema, params, "item/completed", setErrorBanner);
             if (!p) break;
             const item = p.item as unknown as ThreadItem;
+            // The item's own text/aggregatedOutput is authoritative now; drop
+            // any buffered-but-not-yet-flushed delta and the store entry so
+            // neither can resurrect streamingText on an already-finished item.
+            deltaBufRef.current.delete(item.id);
+            clearStreamingText(item.id);
             setItems((prev) => {
               const idx = prev.findIndex((di) => di.item.id === item.id);
               const done: DisplayItem = { key: item.id, item };
@@ -2044,7 +2051,9 @@ export default function App() {
   // (see scripts/check-no-native-dialogs.mjs) and a banner would be noisier
   // than the action deserves.
   const copyTranscript = async () => {
-    const text = transcriptToText(items);
+    const text = transcriptToText(
+      items.map((di) => ({ item: di.item, streamingText: getStreamingText(di.item.id) }))
+    );
     if (!text) {
       setErrorBanner("コピーできる会話がありません");
       return;
@@ -3683,9 +3692,13 @@ const TranscriptItem = memo(function TranscriptItem({
   onLinkError: (msg: string) => void;
   onError: (msg: string) => void;
 }) {
-  const { item, streamingText } = di;
+  const { item } = di;
+  // Subscribed per item id (see streamingText.ts) instead of read off `di`:
+  // a delta flush now only notifies the one component whose id changed,
+  // instead of forcing every TranscriptItem to re-render each tick.
+  const streamingText = useStreamingText(item.id);
   const mdComponents = markdownLinkComponents(distro, cwd, connectionMode, onLinkError);
-  const copyText = itemToText(di);
+  const copyText = itemToText({ item, streamingText });
   switch (item.type) {
     case "userMessage": {
       return (
