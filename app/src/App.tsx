@@ -64,6 +64,7 @@ import { elapsedMs, pauseClock, resumeClock, startClock, type TurnClock } from "
 import { IDLE_POLL_INTERVAL_MS, inputDetected, shouldNotifyOnTurnEnd } from "./idleNotice";
 import { formatElapsed } from "./formatElapsed";
 import { itemToText, transcriptToText } from "./transcriptCopy";
+import { rateLimitWindowLabel } from "./rateLimitLabel";
 import { appendStreamingText, clearStreamingText, getStreamingText, useStreamingText } from "./streamingText";
 import {
   appendSummaryDelta,
@@ -3301,9 +3302,17 @@ export default function App() {
           )}
           {provider !== "ollama" && usagePanel && (
             <button className="usage-badge" onClick={() => void openUsagePanel()} title={usageResetTooltip(usagePanel)}>
-              <UsagePill label="P" pct={usagePanel.rateLimits.primary?.usedPercent} />
+              {usagePanel.rateLimits.primary && (
+                <UsagePill
+                  label={rateLimitWindowLabel(usagePanel.rateLimits.primary.windowDurationMins)}
+                  pct={usagePanel.rateLimits.primary.usedPercent}
+                />
+              )}
               {usagePanel.rateLimits.secondary && (
-                <UsagePill label="S" pct={usagePanel.rateLimits.secondary?.usedPercent} />
+                <UsagePill
+                  label={rateLimitWindowLabel(usagePanel.rateLimits.secondary.windowDurationMins)}
+                  pct={usagePanel.rateLimits.secondary.usedPercent}
+                />
               )}
               <CreditPill rateLimits={usagePanel.rateLimits} />
             </button>
@@ -3339,8 +3348,12 @@ function usageResetTooltip(usagePanel: GetAccountRateLimitsResponse): string {
   const lines: string[] = [];
   const primary = usagePanel.rateLimits.primary;
   const secondary = usagePanel.rateLimits.secondary;
-  if (primary?.resetsAt) lines.push(`P リセット: ${new Date(primary.resetsAt * 1000).toLocaleString()}`);
-  if (secondary?.resetsAt) lines.push(`S リセット: ${new Date(secondary.resetsAt * 1000).toLocaleString()}`);
+  if (primary?.resetsAt) {
+    lines.push(`${rateLimitWindowLabel(primary.windowDurationMins)} リセット: ${new Date(primary.resetsAt * 1000).toLocaleString()}`);
+  }
+  if (secondary?.resetsAt) {
+    lines.push(`${rateLimitWindowLabel(secondary.windowDurationMins)} リセット: ${new Date(secondary.resetsAt * 1000).toLocaleString()}`);
+  }
   return lines.length > 0 ? lines.join("\n") : "使用量の詳細を表示";
 }
 
