@@ -622,6 +622,51 @@ fn ollama_curl_error(url: &str, code: Option<i32>, stderr: &str) -> String {
     }
 }
 
+/// Pure classifier over an already-read `OLLAMA_HOST` value (kept separate
+/// from the tauri command so it can be unit-tested without touching process
+/// environment, which is global and racy across parallel test threads).
+///
+/// `OLLAMA_HOST` is the Ollama *server's* bind-address setting, not a client
+/// destination (see 仕様書.md 5.5) -- this app's own connection logic never
+/// reads it to pick where to connect. But when the Windows-side client (which
+/// always dials the loopback `OLLAMA_WINDOWS_ROOT`) gets connection-refused,
+/// an `OLLAMA_HOST` pinned to some other single address is the single most
+/// likely external cause: Ollama is running, just not listening on loopback
+/// at all. Surfacing that value turns "Ollama isn't running" (false) into a
+/// concrete, actionable diagnosis instead of a repeat of the 2026-09-01
+/// investigation. Returns `None` when the value is unset/blank or already
+/// covers loopback (`127.0.0.1`/`localhost`) or all interfaces (`0.0.0.0`/
+/// `::`/`::1`) -- in those cases `OLLAMA_HOST` is not the culprit.
+fn ollama_host_binding_hint(raw: &str) -> Option<&str> {
+    let value = raw.trim();
+    if value.is_empty() {
+        return None;
+    }
+    let without_scheme = value
+        .strip_prefix("http://")
+        .or_else(|| value.strip_prefix("https://"))
+        .unwrap_or(value);
+    let host = without_scheme
+        .rsplit_once(':')
+        .map(|(host, port)| {
+            if !port.is_empty() && port.chars().all(|c| c.is_ascii_digit()) {
+                host
+            } else {
+                without_scheme
+            }
+        })
+        .unwrap_or(without_scheme)
+        .trim_start_matches('[')
+        .trim_end_matches(']');
+    let is_loopback_or_wildcard =
+        matches!(host, "127.0.0.1" | "localhost" | "0.0.0.0" | "::" | "::1");
+    if is_loopback_or_wildcard {
+        None
+    } else {
+        Some(value)
+    }
+}
+
 /// List locally pulled Ollama models (name + real context length) from
 /// Ollama's native /api/tags (not the OpenAI-compat /v1/models codex itself
 /// queries, which is why codex falls back to generic metadata for unknown
@@ -641,11 +686,26 @@ async fn list_ollama_models() -> Result<Vec<OllamaModelInfo>, String> {
         .await
         .map_err(|e| format!("curl.exe を実行できませんでした（{url} への問い合わせ）: {e}"))?;
     if !output.status.success() {
-        return Err(ollama_curl_error(
+        let mut message = ollama_curl_error(
             &url,
             output.status.code(),
             &String::from_utf8_lossy(&output.stderr),
-        ));
+        );
+        if output.status.code() == Some(7) {
+            if let Some(hint) = std::env::var("OLLAMA_HOST")
+                .ok()
+                .and_then(|raw| ollama_host_binding_hint(&raw).map(str::to_string))
+            {
+                message.push_str(&format!(
+                    "\n\n手がかり: 環境変数 OLLAMA_HOST が `{hint}` に設定されています。\
+                     これはOllamaサーバー自身の待ち受けアドレス指定であり、特定の1アドレスに\
+                     絞ると127.0.0.1（Windows側）が届かなくなることがあります。OLLAMA_HOSTを\
+                     `0.0.0.0:11434` に変更してOllamaを再起動すると、WSL側からの接続を維持した\
+                     まま解決できます。"
+                ));
+            }
+        }
+        return Err(message);
     }
     let body = String::from_utf8_lossy(&output.stdout);
     let json: Value = serde_json::from_str(&body).map_err(|e| {
@@ -956,8 +1016,9 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::{
-        ollama_curl_error, ollama_root_for_host, parse_default_gateway, pasted_image_filename,
-        pasted_image_filename_native, strip_wsl_unc, validate_distro, wsl_exec_args,
+        ollama_curl_error, ollama_host_binding_hint, ollama_root_for_host, parse_default_gateway,
+        pasted_image_filename, pasted_image_filename_native, strip_wsl_unc, validate_distro,
+        wsl_exec_args,
     };
 
     const URL: &str = "http://127.0.0.1:11434/api/tags";
@@ -1014,6 +1075,46 @@ mod tests {
             Some("172.21.112.1".to_string())
         );
         assert_eq!(parse_default_gateway("default dev eth0 scope link\n"), None);
+    }
+
+    // The 2026-09-01 incident this hint exists for: OLLAMA_HOST pinned to the
+    // WSL adapter's single IP, silently starving the Windows-side loopback
+    // client while WSL itself kept working fine.
+    #[test]
+    fn a_single_pinned_address_is_flagged_as_the_likely_cause() {
+        assert_eq!(
+            ollama_host_binding_hint("172.21.112.1:11434"),
+            Some("172.21.112.1:11434")
+        );
+        assert_eq!(
+            ollama_host_binding_hint("http://172.21.112.1:11434"),
+            Some("http://172.21.112.1:11434")
+        );
+    }
+
+    #[test]
+    fn loopback_and_wildcard_bindings_are_not_the_culprit() {
+        for value in [
+            "127.0.0.1:11434",
+            "127.0.0.1",
+            "localhost:11434",
+            "0.0.0.0:11434",
+            "0.0.0.0",
+            "[::1]:11434",
+            "::",
+        ] {
+            assert_eq!(
+                ollama_host_binding_hint(value),
+                None,
+                "{value} should not be flagged"
+            );
+        }
+    }
+
+    #[test]
+    fn unset_or_blank_ollama_host_has_nothing_to_report() {
+        assert_eq!(ollama_host_binding_hint(""), None);
+        assert_eq!(ollama_host_binding_hint("   "), None);
     }
 
     #[test]
