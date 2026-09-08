@@ -129,12 +129,15 @@ const APPROVAL_POLICIES: { value: ApprovalPolicy; label: string }[] = [
 // ordinary turn/start error via the existing errorBanner path rather than
 // being filtered out in advance.
 type ReasoningEffort = "low" | "medium" | "high" | "xhigh" | "max";
+// 強い順（最大→軽）で並べる。「指定なし」はこの強弱スペクトラムの外側にある
+// 選択肢（サーバー側の既定値に従うだけで、必ずしも最弱ではない）なので、
+// 配列には含めずUI側で末尾に別途表示する。
 const REASONING_EFFORTS: { value: ReasoningEffort; label: string }[] = [
-  { value: "low", label: "軽" },
-  { value: "medium", label: "中程度" },
-  { value: "high", label: "高い" },
-  { value: "xhigh", label: "非常に高い" },
   { value: "max", label: "最大" },
+  { value: "xhigh", label: "非常に高い" },
+  { value: "high", label: "高い" },
+  { value: "medium", label: "中程度" },
+  { value: "low", label: "軽" },
 ];
 
 // How often the footer's usage badge re-reads account/rateLimits/read while
@@ -2543,12 +2546,12 @@ export default function App() {
                   onChange={(e) => onReasoningEffortChange(e.target.value)}
                   title="turn/startのeffortとして毎ターン送信されます。接続後もフッターのバッジからいつでも変更できます。GPT-5.6-Lunaを選ぶとここは自動で「最大」に、Sol/Terraを選ぶと自動で「高い」になります"
                 >
-                  <option value="">指定なし（サーバー側の設定に従う）</option>
                   {REASONING_EFFORTS.map((r) => (
                     <option key={r.value} value={r.value}>
                       {r.label}
                     </option>
                   ))}
+                  <option value="">指定なし（サーバー側の設定に従う）</option>
                 </select>
               </label>
               <label>
@@ -3029,17 +3032,6 @@ export default function App() {
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <h3>推論レベルを選択</h3>
             <ul className="model-list">
-              <li>
-                <button
-                  onClick={() => {
-                    onReasoningEffortChange("");
-                    setEffortPickerOpen(false);
-                  }}
-                >
-                  <strong>指定なし（サーバー側の設定に従う）</strong>
-                  {reasoningEffort === null && <span className="tag">選択中</span>}
-                </button>
-              </li>
               {REASONING_EFFORTS.map((r) => (
                 <li key={r.value}>
                   <button
@@ -3056,6 +3048,17 @@ export default function App() {
                   </button>
                 </li>
               ))}
+              <li>
+                <button
+                  onClick={() => {
+                    onReasoningEffortChange("");
+                    setEffortPickerOpen(false);
+                  }}
+                >
+                  <strong>指定なし（サーバー側の設定に従う）</strong>
+                  {reasoningEffort === null && <span className="tag">選択中</span>}
+                </button>
+              </li>
             </ul>
             <button className="mini" onClick={() => setEffortPickerOpen(false)}>
               閉じる
