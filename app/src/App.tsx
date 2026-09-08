@@ -98,11 +98,14 @@ const DEFAULT_MODEL_OVERRIDE_LABEL = "GPT-5.6-Luna";
 
 // Pre-connect model choices (model/list needs a live connection, so this is
 // a small curated set rather than the live catalog -- confirmed current via
-// a real model/list probe on 2026-07-27). Any other value (typed pre-connect
-// via the fallback text input, or picked post-connect from the live 🧠
-// picker) still shows up as an extra "(未確認)" option, same pattern as the
-// WSL distro select's fallback.
+// a real model/list probe on 2026-09-08, refreshed from the 2026-07-27 set
+// to add GPT-6-Astra). Any other value (typed pre-connect via the fallback
+// text input, or picked post-connect from the live 🧠 picker) still shows up
+// as an extra "(未確認)" option, same pattern as the WSL distro select's
+// fallback -- so this list only ever needs to stay roughly current, not
+// exhaustive.
 const MODEL_PRESETS: { value: string; label: string }[] = [
+  { value: "gpt-6-astra", label: "GPT-6-Astra" },
   { value: "gpt-5.6-sol", label: "GPT-5.6-Sol" },
   { value: "gpt-5.6-terra", label: "GPT-5.6-Terra" },
   { value: "gpt-5.6-luna", label: "GPT-5.6-Luna" },
