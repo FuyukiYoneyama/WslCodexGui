@@ -1,7 +1,7 @@
 {
   "name": "app",
   "private": true,
-  "version": "0.5.37",
+  "version": "0.5.38",
   "license": "MIT",
   "type": "module",
   "scripts": {
