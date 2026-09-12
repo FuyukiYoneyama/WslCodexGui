@@ -217,6 +217,20 @@ function playApprovalBell() {
 // confirmation; this only controls what's technically permitted to execute.
 const PROJECT_SANDBOX = "workspace-write";
 
+// workspace-write's default writable set excludes .git (confirmed via a live
+// probe: `git commit` fails with "Unable to create '.../.git/index.lock':
+// Read-only file system", with no approval request offered regardless of
+// approvalPolicy -- this is a hard sandbox denial, not something the
+// approval level can escalate past). thread/start's `config` field accepts
+// the same dotted-path overrides as codex's `-c`, so widen
+// sandbox_workspace_write.writable_roots to include cwd/.git explicitly.
+// Setting this replaces the whole list rather than appending, so cwd itself
+// must be listed too.
+function gitWritableRootsConfig(cwd: string): Record<string, unknown> {
+  const trimmed = cwd.replace(/\/$/, "");
+  return { "sandbox_workspace_write.writable_roots": [trimmed, `${trimmed}/.git`] };
+}
+
 function loadStringList(key: string, fallback: string[]): string[] {
   try {
     const raw = localStorage.getItem(key);
@@ -1654,10 +1668,20 @@ export default function App() {
     // send can't be mistaken for a real change (openThread already asked
     // the user before calling this, when the two differ).
     const effectivePolicy = threadApprovalPolicies[threadId] ?? approvalPolicy;
+    // The resumed thread's own cwd (it may differ from the currently
+    // selected project) so .git writable_roots line up with where git
+    // commands will actually run; falls back to the current selection if
+    // this thread isn't in the loaded list yet.
+    const resumeCwd = threads.find((t) => t.id === threadId)?.cwd ?? projectCwd;
     try {
       const raw = await invoke("rpc_request", {
         method: "thread/resume",
-        params: { threadId, approvalPolicy: effectivePolicy, sandbox: PROJECT_SANDBOX },
+        params: {
+          threadId,
+          approvalPolicy: effectivePolicy,
+          sandbox: PROJECT_SANDBOX,
+          config: gitWritableRootsConfig(resumeCwd),
+        },
       });
       const res = parseOrReport(ThreadResumeResponseSchema, raw, "thread/resume", setErrorBanner);
       if (!res) return;
@@ -1790,7 +1814,12 @@ export default function App() {
     try {
       const raw = await invoke("rpc_request", {
         method: "thread/start",
-        params: { cwd: projectCwd.trim(), approvalPolicy, sandbox: PROJECT_SANDBOX },
+        params: {
+          cwd: projectCwd.trim(),
+          approvalPolicy,
+          sandbox: PROJECT_SANDBOX,
+          config: gitWritableRootsConfig(projectCwd.trim()),
+        },
       });
       const res = parseOrReport(ThreadStartResponseSchema, raw, "thread/start", setErrorBanner);
       if (!res) return;
