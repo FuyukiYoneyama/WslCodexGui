@@ -104,14 +104,20 @@ const DEFAULT_MODEL_OVERRIDE_LABEL = "GPT-5.6-Luna";
 // as an extra "(未確認)" option, same pattern as the WSL distro select's
 // fallback -- so this list only ever needs to stay roughly current, not
 // exhaustive.
-const MODEL_PRESETS: { value: string; label: string }[] = [
+const CURRENT_MODEL_PRESETS: { value: string; label: string }[] = [
   { value: "gpt-6-astra", label: "GPT-6-Astra" },
   { value: "gpt-6-sol", label: "GPT-6-Sol" },
   { value: "gpt-6-luna", label: "GPT-6-Luna" },
+];
+// GPT-5.6 series superseded by GPT-6 -- kept selectable (DEFAULT_MODEL_OVERRIDE
+// still points at gpt-5.6-luna) but tucked behind a "表示" toggle so the
+// default view only shows the current generation.
+const LEGACY_MODEL_PRESETS: { value: string; label: string }[] = [
   { value: "gpt-5.6-sol", label: "GPT-5.6-Sol" },
   { value: "gpt-5.6-terra", label: "GPT-5.6-Terra" },
   { value: "gpt-5.6-luna", label: "GPT-5.6-Luna" },
 ];
+const MODEL_PRESETS = [...CURRENT_MODEL_PRESETS, ...LEGACY_MODEL_PRESETS];
 
 // thread/start's approvalPolicy, fixed for the lifetime of a thread (cannot
 // be changed on thread/resume). "granular" also exists server-side but is
@@ -454,6 +460,20 @@ export default function App() {
   // Toggles the pre-connect モデル field between MODEL_PRESETS' <select> and
   // a free-text <input> for an ID outside that curated list.
   const [modelCustomEntry, setModelCustomEntry] = useState(false);
+  // Whether LEGACY_MODEL_PRESETS (GPT-5.6 series) show in the pre-connect
+  // select. Defaults hidden; forced visible below regardless of this flag
+  // when the current selection is itself a legacy model, so switching this
+  // off never hides your own active choice.
+  const [showLegacyModels, setShowLegacyModels] = useState(
+    () => localStorage.getItem("showLegacyModels") === "1"
+  );
+  const toggleShowLegacyModels = () => {
+    setShowLegacyModels((prev) => {
+      const next = !prev;
+      localStorage.setItem("showLegacyModels", next ? "1" : "0");
+      return next;
+    });
+  };
   // What config/read actually reported as the server's currently-effective
   // model_reasoning_effort/service_tier -- distinct from reasoningEffort's
   // own null-ness (which just means "this app isn't overriding it"). Queried
@@ -2548,29 +2568,49 @@ export default function App() {
                     </button>
                   </div>
                 ) : (
-                  <select
-                    value={modelOverride ?? DEFAULT_MODEL_OVERRIDE}
-                    onChange={(e) => {
-                      if (e.target.value === "__custom__") {
-                        setModelCustomEntry(true);
-                        return;
-                      }
-                      onModelOverrideInput(e.target.value);
-                    }}
-                    title="turn/startのmodelとして毎ターン送信されます。接続後はフッターの🧠バッジから一覧を見て選べます（推論レベル・速度の対応状況もそちらで確認できます）。GPT-5.6-Lunaを選ぶと推論レベルは自動で「最大」に、Sol/Terraを選ぶと自動で「高い」になります（選択後に変更可）"
-                  >
-                    {!MODEL_PRESETS.some((m) => m.value === (modelOverride ?? DEFAULT_MODEL_OVERRIDE)) && (
-                      <option value={modelOverride ?? DEFAULT_MODEL_OVERRIDE}>
-                        {modelOverrideLabel ?? modelOverride}（未確認）
-                      </option>
-                    )}
-                    {MODEL_PRESETS.map((m) => (
-                      <option key={m.value} value={m.value}>
-                        {m.label}
-                      </option>
-                    ))}
-                    <option value="__custom__">その他（IDを直接入力）</option>
-                  </select>
+                  <div className="project-path-row">
+                    <select
+                      value={modelOverride ?? DEFAULT_MODEL_OVERRIDE}
+                      onChange={(e) => {
+                        if (e.target.value === "__custom__") {
+                          setModelCustomEntry(true);
+                          return;
+                        }
+                        onModelOverrideInput(e.target.value);
+                      }}
+                      title="turn/startのmodelとして毎ターン送信されます。接続後はフッターの🧠バッジから一覧を見て選べます（推論レベル・速度の対応状況もそちらで確認できます）。GPT-5.6-Lunaを選ぶと推論レベルは自動で「最大」に、Sol/Terraを選ぶと自動で「高い」になります（選択後に変更可）"
+                    >
+                      {!MODEL_PRESETS.some((m) => m.value === (modelOverride ?? DEFAULT_MODEL_OVERRIDE)) && (
+                        <option value={modelOverride ?? DEFAULT_MODEL_OVERRIDE}>
+                          {modelOverrideLabel ?? modelOverride}（未確認）
+                        </option>
+                      )}
+                      {CURRENT_MODEL_PRESETS.map((m) => (
+                        <option key={m.value} value={m.value}>
+                          {m.label}
+                        </option>
+                      ))}
+                      {(showLegacyModels ||
+                        LEGACY_MODEL_PRESETS.some((m) => m.value === (modelOverride ?? DEFAULT_MODEL_OVERRIDE))) && (
+                        <optgroup label="GPT-5.6系（旧世代）">
+                          {LEGACY_MODEL_PRESETS.map((m) => (
+                            <option key={m.value} value={m.value}>
+                              {m.label}
+                            </option>
+                          ))}
+                        </optgroup>
+                      )}
+                      <option value="__custom__">その他（IDを直接入力）</option>
+                    </select>
+                    <button
+                      type="button"
+                      className="mini"
+                      onClick={toggleShowLegacyModels}
+                      title="GPT-5.6系（旧世代）モデルの表示切り替え"
+                    >
+                      {showLegacyModels ? "旧世代を隠す" : "旧世代を表示"}
+                    </button>
+                  </div>
                 )}
               </label>
               <label>
