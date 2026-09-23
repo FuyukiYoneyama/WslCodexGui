@@ -2569,6 +2569,14 @@ export default function App() {
                   </div>
                 ) : (
                   <div className="project-path-row">
+                    <button
+                      type="button"
+                      className="mini"
+                      onClick={toggleShowLegacyModels}
+                      title="GPT-5.6系（旧世代）モデルの表示切り替え"
+                    >
+                      {showLegacyModels ? "旧世代を隠す" : "旧世代を表示"}
+                    </button>
                     <select
                       value={modelOverride ?? DEFAULT_MODEL_OVERRIDE}
                       onChange={(e) => {
@@ -2602,14 +2610,6 @@ export default function App() {
                       )}
                       <option value="__custom__">その他（IDを直接入力）</option>
                     </select>
-                    <button
-                      type="button"
-                      className="mini"
-                      onClick={toggleShowLegacyModels}
-                      title="GPT-5.6系（旧世代）モデルの表示切り替え"
-                    >
-                      {showLegacyModels ? "旧世代を隠す" : "旧世代を表示"}
-                    </button>
                   </div>
                 )}
               </label>
