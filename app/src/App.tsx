@@ -98,21 +98,25 @@ const DEFAULT_MODEL_OVERRIDE_LABEL = "GPT-5.6-Luna";
 
 // Pre-connect model choices (model/list needs a live connection, so this is
 // a small curated set rather than the live catalog -- confirmed current via
-// a real model/list probe on 2026-09-08, refreshed from the 2026-07-27 set
-// to add GPT-6-Astra). Any other value (typed pre-connect via the fallback
+// a real model/list probe on 2026-09-30, refreshed from the 2026-09-08 set
+// to add GPT-6.1-Sol, which the same probe reports as the server's current
+// isDefault:true model). Any other value (typed pre-connect via the fallback
 // text input, or picked post-connect from the live 🧠 picker) still shows up
 // as an extra "(未確認)" option, same pattern as the WSL distro select's
 // fallback -- so this list only ever needs to stay roughly current, not
 // exhaustive.
 const CURRENT_MODEL_PRESETS: { value: string; label: string }[] = [
+  { value: "gpt-6.1-sol", label: "GPT-6.1-Sol" },
   { value: "gpt-6-astra", label: "GPT-6-Astra" },
-  { value: "gpt-6-sol", label: "GPT-6-Sol" },
   { value: "gpt-6-luna", label: "GPT-6-Luna" },
 ];
-// GPT-5.6 series superseded by GPT-6 -- kept selectable (DEFAULT_MODEL_OVERRIDE
-// still points at gpt-5.6-luna) but tucked behind a "表示" toggle so the
-// default view only shows the current generation.
+// Superseded models -- kept selectable (DEFAULT_MODEL_OVERRIDE still points
+// at gpt-5.6-luna) but tucked behind a "表示" toggle so the default view only
+// shows the current lineup. Not just the GPT-5.6 series: gpt-6-sol moved
+// here too once gpt-6.1-sol superseded it (2026-09-30), so this list -- and
+// its "旧世代" label in the UI -- deliberately isn't tied to one generation.
 const LEGACY_MODEL_PRESETS: { value: string; label: string }[] = [
+  { value: "gpt-6-sol", label: "GPT-6-Sol" },
   { value: "gpt-5.6-sol", label: "GPT-5.6-Sol" },
   { value: "gpt-5.6-terra", label: "GPT-5.6-Terra" },
   { value: "gpt-5.6-luna", label: "GPT-5.6-Luna" },
@@ -460,7 +464,7 @@ export default function App() {
   // Toggles the pre-connect モデル field between MODEL_PRESETS' <select> and
   // a free-text <input> for an ID outside that curated list.
   const [modelCustomEntry, setModelCustomEntry] = useState(false);
-  // Whether LEGACY_MODEL_PRESETS (GPT-5.6 series) show in the pre-connect
+  // Whether LEGACY_MODEL_PRESETS (superseded models) show in the pre-connect
   // select. Defaults hidden; forced visible below regardless of this flag
   // when the current selection is itself a legacy model, so switching this
   // off never hides your own active choice.
@@ -2573,7 +2577,7 @@ export default function App() {
                       type="button"
                       className="mini"
                       onClick={toggleShowLegacyModels}
-                      title="GPT-5.6系（旧世代）モデルの表示切り替え"
+                      title="旧世代モデルの表示切り替え"
                     >
                       {showLegacyModels ? "旧世代を隠す" : "旧世代を表示"}
                     </button>
@@ -2600,7 +2604,7 @@ export default function App() {
                       ))}
                       {(showLegacyModels ||
                         LEGACY_MODEL_PRESETS.some((m) => m.value === (modelOverride ?? DEFAULT_MODEL_OVERRIDE))) && (
-                        <optgroup label="GPT-5.6系（旧世代）">
+                        <optgroup label="旧世代">
                           {LEGACY_MODEL_PRESETS.map((m) => (
                             <option key={m.value} value={m.value}>
                               {m.label}
