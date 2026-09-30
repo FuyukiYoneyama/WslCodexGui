@@ -524,6 +524,38 @@ fn system_idle_millis() -> Result<u64, String> {
     }
 }
 
+/// Ground-truth check of whether *this* window is the one with OS focus,
+/// via `GetForegroundWindow()` compared against this window's own HWND.
+///
+/// Deliberately bypasses Tauri's own `Window::isFocused()` JS API: on real
+/// hardware it was found to report stale `true` values for several seconds
+/// after `requestUserAttention` flashes the taskbar (`FlashWindowEx`
+/// alternates the caption's active/inactive appearance as part of the
+/// animation, and Tauri's tracked focus state appears to follow that
+/// appearance rather than strict OS focus) -- confirmed by comparing its
+/// readings against `GetForegroundWindow()` directly while a *different*,
+/// genuinely-focused application stayed in the foreground throughout. Using
+/// that flaky signal to decide when to stop flashing (idleNotice.ts's
+/// `shouldStopFlashing`) would make the notice unreliable in exactly the
+/// scenario it exists for. This command has no such dependency on flashing.
+#[tauri::command]
+fn is_window_focused(window: tauri::WebviewWindow) -> Result<bool, String> {
+    #[cfg(windows)]
+    {
+        use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
+
+        let hwnd = window.hwnd().map_err(|e| e.to_string())?;
+        // SAFETY: no arguments, reads a value the OS already maintains.
+        let foreground = unsafe { GetForegroundWindow() };
+        Ok(foreground == hwnd)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = window;
+        Ok(true)
+    }
+}
+
 /// Open an interactive Windows shell at `path` in its own console window
 /// (native-mode counterpart to `open_wsl_terminal`). Sets the child's cwd
 /// directly rather than building a `cd`-then-path shell command, so `path`
@@ -1007,7 +1039,8 @@ pub fn run() {
             verify_codex_path,
             detect_codex_path_native,
             verify_codex_path_native,
-            system_idle_millis
+            system_idle_millis,
+            is_window_focused
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

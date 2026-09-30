@@ -773,13 +773,21 @@ export default function App() {
   // only once this window is the one the user actually came back to --
   // stray input in some other, still-focused window must not cancel the
   // flash early (see idleNotice.ts).
+  //
+  // Focus is read via the Rust `is_window_focused` command
+  // (GetForegroundWindow() compared against this window's HWND) rather than
+  // Tauri's own `Window.isFocused()`: on real hardware that JS API was found
+  // to report stale `true` values for several seconds after
+  // `requestUserAttention` flashes the taskbar, which would make the STOP
+  // check above fire on a false signal and cancel the flash almost as soon
+  // as it started -- see is_window_focused's doc comment in lib.rs.
   const notifyTurnEndIfIdle = useCallback(() => {
     void (async () => {
       try {
         const { getCurrentWindow, UserAttentionType } = await import("@tauri-apps/api/window");
         const win = getCurrentWindow();
         const idle = await invoke<number>("system_idle_millis");
-        const focused = await win.isFocused();
+        const focused = await invoke<boolean>("is_window_focused");
         if (!shouldFlashOnTurnEnd(idle, focused)) return;
         await win.requestUserAttention(UserAttentionType.Critical);
         flashingRef.current = true;
@@ -788,7 +796,7 @@ export default function App() {
           void (async () => {
             try {
               const current = await invoke<number>("system_idle_millis");
-              const currentFocused = await win.isFocused();
+              const currentFocused = await invoke<boolean>("is_window_focused");
               if (shouldStopFlashing(currentFocused, previousIdle, current)) stopFlashing();
               else previousIdle = current;
             } catch {

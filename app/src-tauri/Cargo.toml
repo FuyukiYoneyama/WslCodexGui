@@ -1,6 +1,6 @@
 [package]
 name = "app"
-version = "0.5.43"
+version = "0.5.44"
 description = "WSL2内のCodex CLI（app-server）をWindowsネイティブGUIから操作するためのラッパーアプリ"
 authors = ["Fuyuki Yoneyama"]
 license = "MIT"
@@ -32,4 +32,11 @@ uuid = { version = "1", features = ["v4"] }
 # just away from this window). A webview only ever sees input delivered to its
 # own window, so this has to come from the OS.
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_SystemInformation", "Win32_UI_Input_KeyboardAndMouse"] }
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_SystemInformation", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging"] }
+# GetForegroundWindow, compared against WebviewWindow::hwnd(), for a ground-
+# truth focus check independent of Tauri's own isFocused() -- see the
+# is_window_focused doc comment for why that's necessary. Pinned to the same
+# version tauri itself already pulls in (WebviewWindow::hwnd() returns this
+# crate's HWND, not windows-sys's, so the types must match) to avoid a
+# duplicate copy of the crate in the dependency tree.
+windows = { version = "=0.61.3", features = ["Win32_UI_WindowsAndMessaging"] }
