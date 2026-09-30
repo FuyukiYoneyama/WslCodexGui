@@ -61,7 +61,7 @@ import { isNearBottom } from "./scrollFollow";
 import { turnErrorNotice, type TurnErrorNotice, type TurnErrorParams } from "./turnErrorNotice";
 import { collapsePreview } from "./collapsePreview";
 import { elapsedMs, pauseClock, resumeClock, startClock, type TurnClock } from "./turnClock";
-import { IDLE_POLL_INTERVAL_MS, inputDetected, shouldNotifyOnTurnEnd } from "./idleNotice";
+import { IDLE_POLL_INTERVAL_MS, shouldFlashOnTurnEnd, shouldStopFlashing } from "./idleNotice";
 import { formatElapsed } from "./formatElapsed";
 import { itemToText, transcriptToText } from "./transcriptCopy";
 import { rateLimitWindowLabel } from "./rateLimitLabel";
@@ -767,23 +767,29 @@ export default function App() {
     });
   }, []);
 
-  // Flash only if the desktop itself has been idle -- someone who has been
-  // moving the mouse can see the turn finish on their own. Once flashing,
-  // poll the same counter and stop at the first sign of input anywhere.
+  // Flash if the desktop has been idle, or this window simply isn't focused
+  // (someone working in another window that covers this one can't see the
+  // turn finish either). Once flashing, keep polling both signals and stop
+  // only once this window is the one the user actually came back to --
+  // stray input in some other, still-focused window must not cancel the
+  // flash early (see idleNotice.ts).
   const notifyTurnEndIfIdle = useCallback(() => {
     void (async () => {
       try {
-        const idle = await invoke<number>("system_idle_millis");
-        if (!shouldNotifyOnTurnEnd(idle)) return;
         const { getCurrentWindow, UserAttentionType } = await import("@tauri-apps/api/window");
-        await getCurrentWindow().requestUserAttention(UserAttentionType.Critical);
+        const win = getCurrentWindow();
+        const idle = await invoke<number>("system_idle_millis");
+        const focused = await win.isFocused();
+        if (!shouldFlashOnTurnEnd(idle, focused)) return;
+        await win.requestUserAttention(UserAttentionType.Critical);
         flashingRef.current = true;
         let previousIdle = idle;
         flashPollRef.current = window.setInterval(() => {
           void (async () => {
             try {
               const current = await invoke<number>("system_idle_millis");
-              if (inputDetected(previousIdle, current)) stopFlashing();
+              const currentFocused = await win.isFocused();
+              if (shouldStopFlashing(currentFocused, previousIdle, current)) stopFlashing();
               else previousIdle = current;
             } catch {
               stopFlashing(); // can't tell any more -- don't flash forever
@@ -791,7 +797,7 @@ export default function App() {
           })();
         }, IDLE_POLL_INTERVAL_MS);
       } catch {
-        // Idle state unavailable: skip the notice rather than flash blindly.
+        // Idle/focus state unavailable: skip the notice rather than flash blindly.
       }
     })();
   }, [stopFlashing]);
