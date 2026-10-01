@@ -26,6 +26,7 @@ export const CONFIRMED_CODEX_CLI_VERSIONS = [
   "0.156.0",
   "0.156.1",
   "0.159.1",
+  "0.159.3",
 ];
 
 export function isConfirmedCodexCliVersion(version: string): boolean {
