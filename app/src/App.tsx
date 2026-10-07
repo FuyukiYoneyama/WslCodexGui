@@ -62,6 +62,7 @@ import { turnErrorNotice, type TurnErrorNotice, type TurnErrorParams } from "./t
 import { collapsePreview } from "./collapsePreview";
 import { elapsedMs, pauseClock, resumeClock, startClock, type TurnClock } from "./turnClock";
 import { IDLE_POLL_INTERVAL_MS, shouldFlashOnTurnEnd, shouldStopFlashing } from "./idleNotice";
+import { ImeAnchorWatch } from "./imeGuard";
 import { formatElapsed } from "./formatElapsed";
 import { itemToText, transcriptToText } from "./transcriptCopy";
 import { rateLimitWindowLabel } from "./rateLimitLabel";
@@ -933,6 +934,48 @@ export default function App() {
   // that case is merely a convenience for when focus drifted elsewhere while
   // waiting.
   const composerInputRef = useRef<HTMLTextAreaElement>(null);
+
+  // Self-heal for "Japanese IME composes at the desktop's top-left instead of
+  // in the composer" (see imeGuard.ts for the symptom and how it is detected).
+  // The cure is the same trick as the startup warm-up below: move focus to
+  // another element and straight back, which makes WebView2 re-attach the IME.
+  // It only runs after the failure was observed -- never preemptively, because
+  // refocusing at the wrong moment (mid-composition) is itself what broke the
+  // IME in 0.5.26.
+  const healComposerIme = useCallback(() => {
+    const el = composerInputRef.current;
+    // Only the composer, and only while this window really has focus.
+    if (!el || document.activeElement !== el || !document.hasFocus()) return;
+    const { selectionStart, selectionEnd } = el;
+    const dummy = document.createElement("input");
+    dummy.style.position = "fixed";
+    dummy.style.left = "-9999px";
+    dummy.style.opacity = "0";
+    dummy.tabIndex = -1;
+    document.body.appendChild(dummy);
+    try {
+      dummy.focus({ preventScroll: true });
+      el.focus({ preventScroll: true });
+      if (selectionStart !== null && selectionEnd !== null) {
+        el.setSelectionRange(selectionStart, selectionEnd);
+      }
+    } finally {
+      document.body.removeChild(dummy);
+    }
+    // Leave a trace in the diagnostics pane: it shows how often this happens
+    // in real use, which is the only evidence available for a bug that cannot
+    // be reproduced on demand.
+    setStderrLog((prev) => [
+      ...prev.slice(-199),
+      `[WslCodexGui] ${new Date().toLocaleTimeString()} IME自動復旧: 文字キーを押しても変換が入力欄へ届かなかったため、フォーカスを再設定しました`,
+    ]);
+  }, []);
+  const imeWatchRef = useRef<ImeAnchorWatch | null>(null);
+  if (imeWatchRef.current === null) {
+    imeWatchRef.current = new ImeAnchorWatch({ heal: healComposerIme });
+  }
+  useEffect(() => () => imeWatchRef.current?.dispose(), []);
+
   useEffect(() => {
     if (connState !== "connected" || !activeThreadId) return;
     // Deliberately NOT re-focused when a turn ends. That existed because the
@@ -2431,6 +2474,11 @@ export default function App() {
 
   // N-05: never send/navigate while IME composition is active.
   const onInputKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    imeWatchRef.current?.keyDown({
+      keyCode: e.nativeEvent.keyCode,
+      code: e.nativeEvent.code,
+      isComposing: e.nativeEvent.isComposing,
+    });
     if (e.nativeEvent.isComposing) return;
 
     if (slashOpen && filteredCommands.length > 0) {
@@ -3025,6 +3073,8 @@ export default function App() {
                 value={input}
                 onChange={onInputChange}
                 onKeyDown={onInputKeyDown}
+                onCompositionStart={() => imeWatchRef.current?.compositionStart()}
+                onCompositionEnd={() => imeWatchRef.current?.compositionEnd()}
                 onPaste={handleComposerPaste}
                 placeholder={
                   !activeThreadId
