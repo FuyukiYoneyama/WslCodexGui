@@ -24,10 +24,17 @@ WSL側の`codex` CLIは、このアプリが検証していないバージョン
 2. [app/src/codexVersion.ts](app/src/codexVersion.ts)の`CONFIRMED_CODEX_CLI_VERSIONS`配列の最後のエントリと比較する。
 3. **一致していれば** — 何もせず、依頼された作業に進んでよい。
 4. **バージョンが変わっていれば**(未確認バージョンになっていれば)、依頼された作業に着手する前に、次の検証を行う:
-   - `wsl -d <distro> --exec <codex絶対パス> app-server generate-ts --out <一時ディレクトリ> --experimental`を実行し、生成された型定義を[app/src/schemas.ts](app/src/schemas.ts)・[app/src/types.ts](app/src/types.ts)、およびこのアプリが実際に呼んでいるRPCメソッド(`App.tsx`内の`method: "..."`検索)と突き合わせ、フィールドの追加・削除・型変更・メソッドの廃止がないか確認する
-   - `wsl -d <distro> --exec <codex絶対パス> --help`と`... app-server --help`の出力を確認し、既知のオプション一覧と食い違いがないか確認する
+   - **プロトコル差分**: [app/scripts/codex-protocol.mjs](app/scripts/codex-protocol.mjs)で、現在の`generate-ts`出力をリポジトリ内の基準[docs/codex-protocol-baseline/](docs/codex-protocol-baseline/)(`VERSION`ファイルに生成元のcodexバージョンを記録)と機械的に比較する。**PowerShellから**実行すること(Git BashだとMSYSが`/home/...`をWindowsパスに書き換える):
+     ```
+     cd app
+     node scripts/codex-protocol.mjs --codex <codex絶対パス> [--distro <distro>]
+     ```
+     終了コード0=差分なし、1=差分あり、2=実行エラー。差分があれば追加/削除/変更ファイルが一覧され、このアプリが直接依存する型(★)は差分も表示される(全件は`--full`)。★の型の変化は、[app/src/schemas.ts](app/src/schemas.ts)・[app/src/types.ts](app/src/types.ts)、および`App.tsx`内の`method: "..."`と突き合わせて影響を判断する。
+   - `wsl -d <distro> --exec <codex絶対パス> --help`と`... app-server --help`の出力を確認し、既知のオプション一覧と食い違いがないか確認する(こちらは基準を保存していないため目視)
    - 気になる挙動(承認まわり・サンドボックスまわりなど、過去に実機PoCでしか判明しなかった領域)があれば、[poc/](poc/)配下に最小スクリプトを書いて実機で再現・確認する。推測でコードを書かない
-5. 検証の結果、このアプリの挙動に影響する変更が見つかった場合は、**いきなり直さず**、原因と対処案をユーザーに提示し、実行してよいか確認してから着手する(2節参照)。影響がないと判断した場合も、`CONFIRMED_CODEX_CLI_VERSIONS`に新バージョンを追加することを検討する。
+5. 検証の結果、このアプリの挙動に影響する変更が見つかった場合は、**いきなり直さず**、原因と対処案をユーザーに提示し、実行してよいか確認してから着手する(2節参照)。影響がないと判断した場合は、`CONFIRMED_CODEX_CLI_VERSIONS`に新バージョンを追加し、**同じコミットで基準も更新する**(`node scripts/codex-protocol.mjs --codex <codex絶対パス> --save`)。基準の更新を忘れると、次回は今回の変更も「差分」として再検出される。影響がある変更を直す場合も、直した後で同様に基準を更新する。
+
+基準はリポジトリ内にあるため、複数マシンで共有される(どのマシンで更新してもよい)。codexのバージョンが基準の`VERSION`と同じなのに差分が出る場合は、基準が古い、または`generate-ts`の出力が非決定的になった可能性があるので、まずその点を疑う。
 
 ## 2. 修正・ビルド・配置は必ず提案してから実行する
 

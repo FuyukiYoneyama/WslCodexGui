@@ -1,0 +1,4 @@
+# codex app-server generate-ts の出力スナップショット（app/scripts/codex-protocol.mjs）。
+# WindowsのautocrlfでCRLFに変換されると、生成直後の出力と常に差分が出てしまうため、
+# 作業ツリーでもLFのまま固定する。
+docs/codex-protocol-baseline/** text eol=lf
