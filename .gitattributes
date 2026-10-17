@@ -1,4 +1,16 @@
-# codex app-server generate-ts の出力スナップショット（app/scripts/codex-protocol.mjs）。
-# WindowsのautocrlfでCRLFに変換されると、生成直後の出力と常に差分が出てしまうため、
-# 作業ツリーでもLFのまま固定する。
-docs/codex-protocol-baseline/** text eol=lf
+# 改行コードの方針: リポジトリ内も作業ツリーもLFで統一する。
+#
+# core.autocrlf=true の環境では作業ツリーがCRLFで展開される一方、ビルドツール
+# (tauri build・sed・各種スクリプト)はLFで書き戻すため、中身が同じでも「変更あり」
+# 扱いになって git pull が止まる、という事態が繰り返し起きた(作業ツリーにLF/CRLF/
+# 混在が入り乱れていた)。eol=lf を明示し、マシンごとのautocrlf設定に左右されない
+# ようにする。
+* text=auto eol=lf
+
+# バイナリ(text=autoの自動判定に加えた明示)
+*.png binary
+*.ico binary
+*.icns binary
+
+# codex app-server generate-ts の出力スナップショット(app/scripts/codex-protocol.mjs)。
+# 生成直後の出力(LF)とそのまま比較するため、上の規則でLFに固定されていることが前提。
