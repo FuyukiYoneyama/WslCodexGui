@@ -51,6 +51,31 @@ if (distinct.size > 1) {
   process.exit(1);
 }
 
+// The newest entry of CONFIRMED_CODEX_CLI_VERSIONS and the protocol baseline
+// (docs/codex-protocol-baseline/VERSION, written by scripts/codex-protocol.mjs
+// --save) must move together: AGENTS.md has us update both in the same
+// commit, and a forgotten baseline makes the next codex update re-report this
+// one's changes as new. Nothing enforced that, so fail here when they disagree.
+const confirmedSource = readFileSync(ROOT + "src/codexVersion.ts", "utf8");
+const confirmedList = /CONFIRMED_CODEX_CLI_VERSIONS\s*=\s*\[([^\]]*)\]/.exec(confirmedSource)?.[1] ?? "";
+const newestConfirmed = [...confirmedList.matchAll(/"([^"]+)"/g)].map((m) => m[1]).at(-1) ?? null;
+let protocolBaselineVersion = null;
+try {
+  protocolBaselineVersion = readFileSync(resolve(REPO_ROOT, "docs/codex-protocol-baseline/VERSION"), "utf8").trim();
+} catch {
+  // missing baseline is reported below as a mismatch
+}
+if (!newestConfirmed || newestConfirmed !== protocolBaselineVersion) {
+  console.error("Codex CLI version mismatch:");
+  console.error(`  newest CONFIRMED_CODEX_CLI_VERSIONS entry (src/codexVersion.ts): ${newestConfirmed}`);
+  console.error(`  protocol baseline (docs/codex-protocol-baseline/VERSION):       ${protocolBaselineVersion}`);
+  console.error(
+    "\nAfter verifying a codex update, add it to CONFIRMED_CODEX_CLI_VERSIONS and run\n" +
+      "`node scripts/codex-protocol.mjs --codex <path> --save` in the same commit (AGENTS.md section 1).",
+  );
+  process.exit(1);
+}
+
 // Advisory release check: source edits do not always require a version bump,
 // so this must not fail a build. It exists to make a human/agent explicitly
 // review the changed runtime files instead of overlooking the version field.

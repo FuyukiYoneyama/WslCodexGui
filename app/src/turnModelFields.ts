@@ -12,7 +12,7 @@
 // switched that same resumed thread to qwen3.8:27b immediately. So the
 // picked Ollama model has to ride every turn/start, not just the spawn.
 //
-// The 🧠 picker's OpenAI id (gpt-5.6-luna default) must never go through
+// The 🧠 picker's OpenAI id (gpt-6.1-sol by default) must never go through
 // here instead -- that was the original bug this function guarded against:
 // codex built a GPT-5.6 payload (including an `additional_tools` input item)
 // and pointed it at Ollama, which 400s outright:

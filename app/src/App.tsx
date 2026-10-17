@@ -54,6 +54,7 @@ import { decideJournalReconciliation } from "./journalReconciliation";
 import { isApprovalMethod } from "./approvalMethods";
 import { formatLinkAddress, splitLineSuffix } from "./linkTarget";
 import { forcedEffortForModel } from "./modelEffort";
+import { PROJECT_SANDBOX, gitWritableRootsConfig } from "./sandboxConfig";
 import { turnModelFields } from "./turnModelFields";
 import { creditBadge } from "./creditBadge";
 import { composerRequest } from "./composerRequest";
@@ -93,9 +94,11 @@ const DEFAULT_CODEX_PATH = "/home/user/.nvm/versions/node/v22.22.2/bin/codex";
 const DEFAULT_PROJECT_PATH = "/home/user";
 // Sticks on every connect until the user picks something else via the 🧠
 // footer badge (openModelPicker/pickModel) — only applies to the OpenAI
-// provider; Ollama has its own separate model field.
-const DEFAULT_MODEL_OVERRIDE = "gpt-5.6-luna";
-const DEFAULT_MODEL_OVERRIDE_LABEL = "GPT-5.6-Luna";
+// provider; Ollama has its own separate model field. Points at the head of
+// CURRENT_MODEL_PRESETS (a fresh install or cleared localStorage used to land
+// on gpt-5.6-luna, a model the UI itself hides under "旧世代").
+const DEFAULT_MODEL_OVERRIDE = "gpt-6.1-sol";
+const DEFAULT_MODEL_OVERRIDE_LABEL = "GPT-6.1-Sol";
 
 // Pre-connect model choices (model/list needs a live connection, so this is
 // a small curated set rather than the live catalog -- confirmed current via
@@ -111,11 +114,11 @@ const CURRENT_MODEL_PRESETS: { value: string; label: string }[] = [
   { value: "gpt-6-astra", label: "GPT-6-Astra" },
   { value: "gpt-6-luna", label: "GPT-6-Luna" },
 ];
-// Superseded models -- kept selectable (DEFAULT_MODEL_OVERRIDE still points
-// at gpt-5.6-luna) but tucked behind a "表示" toggle so the default view only
-// shows the current lineup. Not just the GPT-5.6 series: gpt-6-sol moved
-// here too once gpt-6.1-sol superseded it (2026-09-30), so this list -- and
-// its "旧世代" label in the UI -- deliberately isn't tied to one generation.
+// Superseded models -- kept selectable but tucked behind a "表示" toggle so
+// the default view only shows the current lineup. Not just the GPT-5.6
+// series: gpt-6-sol moved here too once gpt-6.1-sol superseded it
+// (2026-09-30), so this list -- and its "旧世代" label in the UI --
+// deliberately isn't tied to one generation.
 const LEGACY_MODEL_PRESETS: { value: string; label: string }[] = [
   { value: "gpt-6-sol", label: "GPT-6-Sol" },
   { value: "gpt-5.6-sol", label: "GPT-5.6-Sol" },
@@ -216,32 +219,6 @@ function playApprovalBell() {
   } catch {
     // best-effort notification sound; never let this break the approval flow
   }
-}
-
-// codex's own trust list (~/.codex/config.toml [projects]) decides sandbox
-// per exact cwd path with no inheritance from a trusted parent -- a project
-// folder picked here that isn't separately trusted via the codex CLI (which
-// this GUI has no equivalent flow for) silently defaults to a read-only
-// sandbox, so every write fails and, under approvalPolicy "never", fails
-// *silently* with no chance to escalate. Deliberately choosing a WSL path in
-// this app's project picker is itself the trust decision, so we always send
-// workspace-write here rather than deferring to codex's own trust list --
-// approvalPolicy is unaffected and still governs whether commands need
-// confirmation; this only controls what's technically permitted to execute.
-const PROJECT_SANDBOX = "workspace-write";
-
-// workspace-write's default writable set excludes .git (confirmed via a live
-// probe: `git commit` fails with "Unable to create '.../.git/index.lock':
-// Read-only file system", with no approval request offered regardless of
-// approvalPolicy -- this is a hard sandbox denial, not something the
-// approval level can escalate past). thread/start's `config` field accepts
-// the same dotted-path overrides as codex's `-c`, so widen
-// sandbox_workspace_write.writable_roots to include cwd/.git explicitly.
-// Setting this replaces the whole list rather than appending, so cwd itself
-// must be listed too.
-function gitWritableRootsConfig(cwd: string): Record<string, unknown> {
-  const trimmed = cwd.replace(/\/$/, "");
-  return { "sandbox_workspace_write.writable_roots": [trimmed, `${trimmed}/.git`] };
 }
 
 function loadStringList(key: string, fallback: string[]): string[] {
