@@ -44,19 +44,31 @@ export function turnErrorNotice(params: TurnErrorParams | null | undefined): Tur
   const error = params?.error ?? null;
   const message = (error?.message ?? "").trim();
   const details = (error?.additionalDetails ?? "").trim();
-  const transient = params?.willRetry === true;
+  // A model the provider has retired fails every attempt the same way, so
+  // codex's retries can't help (observed 2026-10-17 with Ollama Cloud:
+  // "deepseek-v4-flash:0731 was retired on September 25, 2026. Try ..."
+  // after five reconnects). Surface it at once as a real failure and say what
+  // to do, instead of a quiet "Reconnecting... n/5".
+  const retired = RETIRED_MODEL.test(message) || RETIRED_MODEL.test(details);
+  const transient = params?.willRetry === true && !retired;
 
   // codex puts its retry progress ("Reconnecting... 5/5") in `message`, which
   // is already the right one-liner. Fall back to additionalDetails when it is
   // missing, and only then to something generic -- never to raw JSON.
-  const summary = message || firstSentence(details) || "エラーが発生しました";
+  const summary = retired
+    ? "このモデルは提供が終了しています。別のモデルを選んでください（Ollamaなら `ollama rm <モデル名>` で一覧からも外せます）"
+    : message || firstSentence(details) || "エラーが発生しました";
 
-  const detail = [details && details !== summary ? details : null]
+  // When the summary is our own retired-model text, the server's original
+  // wording (which names the model and a suggested replacement) moves here.
+  const detail = [retired && message && message !== details ? message : null, details && details !== summary ? details : null]
     .filter(Boolean)
     .join("\n") || null;
 
   return { transient, summary, detail, turnId: params?.turnId ?? null };
 }
+
+const RETIRED_MODEL = /\bwas retired on\b/i;
 
 // Server messages run long and bury the useful part; the tooltip keeps the
 // whole thing, so the visible line only needs the opening statement.

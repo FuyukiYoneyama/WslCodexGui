@@ -329,6 +329,7 @@ export default function App() {
   );
   const [ollamaModels, setOllamaModels] = useState<{ name: string; contextLength: number | null }[]>([]);
   const [ollamaModelsLoading, setOllamaModelsLoading] = useState(false);
+  const ollamaRefreshInFlightRef = useRef(false);
   // F-02a: history of folders the user has explicitly chosen via the native
   // Explorer picker (browseForProject) or that a resumed thread's own cwd
   // pointed at — never an automatic filesystem scan.
@@ -1964,6 +1965,10 @@ export default function App() {
   // request deliberately stays on Windows loopback; the separate WSL Codex
   // endpoint is resolved by the Rust connect command.
   const refreshOllamaModels = async () => {
+    // The effect below and the ↻ button can overlap; one request in flight
+    // is enough.
+    if (ollamaRefreshInFlightRef.current) return;
+    ollamaRefreshInFlightRef.current = true;
     setOllamaModelsLoading(true);
     try {
       const models = await invoke<{ name: string; context_length: number | null }[]>("list_ollama_models");
@@ -1977,6 +1982,7 @@ export default function App() {
       // person whose Ollama is running and reachable somewhere else.
       setErrorBanner(`Ollamaのモデル一覧を取得できませんでした。\n${e}`);
     } finally {
+      ollamaRefreshInFlightRef.current = false;
       setOllamaModelsLoading(false);
     }
   };
@@ -1989,12 +1995,17 @@ export default function App() {
     }
   };
 
+  // Re-read `ollama list` every time the model picker becomes visible -- at
+  // startup, on switching to Ollama, and after each disconnect -- not just
+  // once per app session. Models get pulled, removed, or retired upstream
+  // (2026-10-17: a retired cloud model was still offered from a stale list),
+  // so a list fetched hours ago can't be trusted.
   useEffect(() => {
-    if (provider === "ollama" && ollamaModels.length === 0 && !ollamaModelsLoading) {
+    if (provider === "ollama" && connState === "disconnected") {
       void refreshOllamaModels();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [provider]);
+  }, [provider, connState]);
 
   const stop = async () => {
     if (!activeThreadId || !activeTurnId) return;

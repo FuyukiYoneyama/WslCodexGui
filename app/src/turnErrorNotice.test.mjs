@@ -59,6 +59,24 @@ test("an empty or malformed notification still says something", () => {
   assert.equal(turnErrorNotice(undefined).transient, false);
 });
 
+// Real wording from Ollama Cloud (2026-10-17), seen after five reconnects.
+const RETIRED_TEXT =
+  "stream disconnected before completion: deepseek-v4-flash:0731 was retired on September 25, 2026. " +
+  "Try gemma4:31b-cloud, which is in the Free plan. (ref: 8ee23efe-aecd-4c8e-9409-7aa887a66da4)";
+
+test("a retired model is a real failure even while codex is still retrying", () => {
+  const notice = turnErrorNotice({ error: { message: "Reconnecting... 1/5", additionalDetails: RETIRED_TEXT }, willRetry: true });
+  assert.equal(notice.transient, false);
+  assert.match(notice.summary, /提供が終了/);
+  assert.match(notice.detail, /deepseek-v4-flash:0731 was retired/);
+});
+
+test("a retired model reported in message keeps the original wording in detail", () => {
+  const notice = turnErrorNotice({ error: { message: RETIRED_TEXT }, willRetry: false });
+  assert.match(notice.summary, /提供が終了/);
+  assert.equal(notice.detail, RETIRED_TEXT);
+});
+
 test("detail is dropped when it would just repeat the summary", () => {
   const notice = turnErrorNotice({ error: { message: "boom", additionalDetails: "boom" }, willRetry: false });
   assert.equal(notice.summary, "boom");
