@@ -16,6 +16,9 @@ npm依存（`app/package-lock.json`記載の全パッケージ、200件超）、
 - **`r-efi`**（間接依存、UEFI関連）: `MIT OR Apache-2.0 OR LGPL-2.1-or-later`という3択の選択制ライセンス。MITまたはApache-2.0を選んで従えばよく、LGPLの条件に縛られる必要はない。
 - **`cssparser`／`cssparser-macros`／`selectors`／`dtoa-short`／`option-ext`**（間接依存、webview関連、計5クレート）: MPL-2.0（ファイル単位の弱いコピーレフト）。これらのクレート自身のソースを改変しない限り、利用する側（本アプリ）のライセンスには影響しない。本アプリはこれらを改変せずCargo経由で利用しているのみ。
 
-## 未対応（残項目.md 参照）
+## 正式なライセンス通知
 
-Apache-2.0・BSD-3-Clause・MPL-2.0など一部のライセンスは、配布物に third-party の著作権表示・ライセンス全文を同梱することを要求する。本ドキュメントはその要件を満たす完全な通知文書ではなく、あくまで調査結果の要約である。配布用インストーラを生成する際（[残項目.md](docs/残項目.md)の未完了項目7）に、`cargo about`や`license-checker`等のツールで全依存関係のライセンス全文を機械的に収集し、正式な third-party notices ファイルとして同梱することを推奨する。
+Apache-2.0・BSD-3-Clause・MPL-2.0など一部のライセンスは、配布物に third-party の著作権表示・ライセンス全文を同梱することを要求する。本ドキュメントは調査結果の要約であり、その要件を満たす通知文書は別にある:
+
+- [THIRD-PARTY-LICENSES.txt](THIRD-PARTY-LICENSES.txt) — 配布物に含まれる全依存（実行ファイルに組み込まれるRustクレート、画面に組み込まれるnpmパッケージ）の著作権表示とライセンス全文。インストーラ（MSI・NSIS）がアプリ本体の`LICENSE`と一緒にインストール先へ配置する（`tauri.conf.json`の`bundle.resources`）。
+- 生成は`app`で`node scripts/generate-third-party-licenses.mjs`（`cargo install --locked cargo-about --features cli`と`npm ci`が前提）。依存関係を変えたら再生成し、リリース前に`--check`で最新であることを確認する。
