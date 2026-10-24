@@ -612,6 +612,10 @@ export default function App() {
   // replaced (e.g. its delayed "disconnected" arriving after a new
   // connect() already succeeded) are ignored instead of corrupting state.
   const connectionIdRef = useRef<string | null>(null);
+  // True while doDisconnect is tearing the connection down, so the
+  // codex:disconnected event that shutdown itself causes is not reported to
+  // the user as an unexpected loss.
+  const intentionalDisconnectRef = useRef(false);
 
   // Native window titlebar (not document.title, which only affects the
   // in-page <title> and has no effect on the OS chrome) shows the GUI
@@ -1573,6 +1577,21 @@ export default function App() {
         discardSentImages();
         // Pending approvals died with the connection (spec 7.3: 失効).
         setApprovals([]);
+        // Deselect the thread too, as doDisconnect does. A new app-server
+        // process has not loaded it, so leaving it selected let a send after
+        // reconnecting fail with "thread not found" (found by the 2026-10-24
+        // GUI fault test: codex killed while an approval was pending, then
+        // reconnect and send). Reopening it from the list resumes it properly.
+        setActiveThreadId(null);
+        setItems([]);
+        setThreadApprovalPolicies({});
+        if (!intentionalDisconnectRef.current) {
+          // Previously the app just fell back to the connect panel without a
+          // word, which reads as if the click went somewhere else.
+          setErrorBanner(
+            "codexとの接続が切れました（codexのプロセスが終了しました）。もう一度「接続」を押してください。スレッドは一覧から開き直せます。"
+          );
+        }
       })
     );
 
@@ -1700,11 +1719,13 @@ export default function App() {
 
   const doDisconnect = async () => {
     setConnState("disconnecting");
+    intentionalDisconnectRef.current = true;
     try {
       await invoke("disconnect");
     } catch (e) {
       setErrorBanner(`切断処理でエラー: ${e}`);
     } finally {
+      intentionalDisconnectRef.current = false;
       connectionIdRef.current = null;
       setConnState("disconnected");
       setActiveThreadId(null);
@@ -2502,6 +2523,11 @@ export default function App() {
           imagesAwaitingTurnRef.current = [];
           for (const image of images) deletePastedImageFile(image);
         }
+        // Certainly never delivered, so hand the text back instead of losing
+        // it (same as the turn/steer path above). Only on certain
+        // non-delivery: when delivery is unknown the turn may be running, and
+        // a refilled composer invites a duplicate send.
+        setInput((current) => current || text);
       }
       setErrorBanner(`turn/start failed: ${rpcErrorText(e)}`);
     }
