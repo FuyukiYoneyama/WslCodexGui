@@ -175,7 +175,7 @@ Windows環境では、Rust/Tauriの依存クレートを再コンパイルする
 npm run tauri build
 ```
 
-`app/src-tauri/target/release/bundle/` 配下にインストーラ（NSIS `.exe`、MSI `.msi` 等）が生成されます。
+`app/src-tauri/target/release/bundle/nsis/` 配下にNSISインストーラ（`-setup.exe`）が生成されます。
 これを他のPCへ配って導入することもできますが、**配布先のPCにも上記の動作要件（WSL2 + WSL内Codex CLI +
 WebView2）が別途必要**です。アプリ自体はCodexの実行環境を内包しません。
 

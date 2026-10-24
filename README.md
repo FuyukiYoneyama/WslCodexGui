@@ -58,7 +58,7 @@ npm install -g @openai/codex@latest
 
 ### 2. アプリを入れる
 
-[Releases](https://github.com/FuyukiYoneyama/WslCodexGui/releases) から、インストーラ（`WslCodexGui_<バージョン>_x64-setup.exe` または `.msi`）をダウンロードして実行します。
+[Releases](https://github.com/FuyukiYoneyama/WslCodexGui/releases) から、NSISインストーラ（`WslCodexGui_<バージョン>_x64-setup.exe`）をダウンロードして実行します。
 
 > **インストーラには電子署名がありません。** そのため、Windows SmartScreenが「WindowsによってPCが保護されました」などの警告を出すことがあります。
 > 配布元を確認したうえで、「詳細情報」→「実行」で進めてください。Releasesに載せているSHA-256と、ダウンロードしたファイルの値が一致するかも確かめられます。
