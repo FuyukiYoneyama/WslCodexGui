@@ -229,12 +229,56 @@ async fn reject_server_request(
 /// directly). Writing through the \\wsl.localhost UNC form is the same
 /// approach already used to edit files inside WSL from Rust elsewhere in
 /// this app (no shell/wsl.exe invocation needed for a plain file write).
+///
+/// The image arrives as the raw IPC body, with the small parameters in
+/// headers. It used to be a `bytes: Vec<u8>` argument, which meant the
+/// frontend built a JSON array with one number per byte: for an 18 MB
+/// screenshot that serialisation alone froze the window for 7-15 seconds
+/// (found by the 2026-10-24 GUI fault test -- clicks queued until it ended).
 #[tauri::command]
-async fn save_pasted_image(
-    connection_mode: String,
-    distro: String,
-    bytes: Vec<u8>,
-    ext: String,
+async fn save_pasted_image(request: tauri::ipc::Request<'_>) -> Result<String, String> {
+    let tauri::ipc::InvokeBody::Raw(bytes) = request.body() else {
+        return Err("pasted image must be sent as a raw body".into());
+    };
+    let header = |name: &str| {
+        request
+            .headers()
+            .get(name)
+            .and_then(|v| v.to_str().ok())
+            .map(percent_decode)
+            .ok_or_else(|| format!("missing {name} header"))
+    };
+    let connection_mode = header("x-connection-mode")?;
+    let distro = header("x-distro")?;
+    let ext = header("x-ext")?;
+    write_pasted_image(&connection_mode, &distro, bytes, &ext).await
+}
+
+/// Undo the frontend's encodeURIComponent (header values must be ASCII, and
+/// a WSL distro name need not be). Malformed escapes are kept as-is.
+fn percent_decode(value: &str) -> String {
+    let bytes = value.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let Some(b) = value.get(i + 1..i + 3).and_then(|h| u8::from_str_radix(h, 16).ok()) {
+                out.push(b);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+async fn write_pasted_image(
+    connection_mode: &str,
+    distro: &str,
+    bytes: &[u8],
+    ext: &str,
 ) -> Result<String, String> {
     if ext.is_empty() || ext.len() > 10 || !ext.chars().all(|c| c.is_ascii_alphanumeric()) {
         return Err("invalid pasted image extension".into());
@@ -245,14 +289,14 @@ async fn save_pasted_image(
         // image can live in the ordinary Windows temp dir and be attached
         // via its plain Windows path -- no /tmp or WSL UNC involved.
         let win_path = std::env::temp_dir().join(&filename);
-        tokio::fs::write(&win_path, &bytes)
+        tokio::fs::write(&win_path, bytes)
             .await
             .map_err(|e| format!("failed to write pasted image: {e}"))?;
         return Ok(win_path.to_string_lossy().into_owned());
     }
-    validate_distro(&distro)?;
+    validate_distro(distro)?;
     let win_path = format!("\\\\wsl.localhost\\{distro}\\tmp\\{filename}");
-    tokio::fs::write(&win_path, &bytes)
+    tokio::fs::write(&win_path, bytes)
         .await
         .map_err(|e| format!("failed to write pasted image: {e}"))?;
     Ok(format!("/tmp/{filename}"))
@@ -1193,12 +1237,23 @@ pub fn run() {
 mod tests {
     use super::{
         ollama_curl_error, ollama_host_binding_hint, ollama_model_details_from,
-        ollama_root_for_host, parse_default_gateway, pasted_image_filename,
+        ollama_root_for_host, parse_default_gateway, pasted_image_filename, percent_decode,
         pasted_image_filename_native, strip_wsl_unc, validate_distro, wsl_exec_args,
     };
     use serde_json::json;
 
     const URL: &str = "http://127.0.0.1:11434/api/tags";
+
+    #[test]
+    fn percent_decode_reverses_encode_uri_component() {
+        assert_eq!(percent_decode("Ubuntu-24.04"), "Ubuntu-24.04");
+        assert_eq!(percent_decode("My%20Distro"), "My Distro");
+        assert_eq!(percent_decode("%E6%97%A5%E6%9C%AC"), "日本");
+        // Malformed or truncated escapes are left alone rather than dropped.
+        assert_eq!(percent_decode("100%"), "100%");
+        assert_eq!(percent_decode("a%zzb"), "a%zzb");
+        assert_eq!(percent_decode("%4"), "%4");
+    }
 
     // Shapes as returned by Ollama 0.40.10 on 2026-10-24 (trimmed).
     #[test]

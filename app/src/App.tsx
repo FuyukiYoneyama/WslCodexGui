@@ -2378,12 +2378,16 @@ export default function App() {
       setImageSavesPending((count) => count + 1);
       void (async () => {
         try {
+          // Raw IPC body, metadata in headers (see save_pasted_image in
+          // lib.rs). Array.from(bytes) here used to turn an 18 MB image into
+          // an 18-million-number JSON array and freeze the window meanwhile.
           const bytes = new Uint8Array(await blob.arrayBuffer());
-          const wslPath = await invoke<string>("save_pasted_image", {
-            connectionMode: connectionModeRef.current,
-            distro: context.distro,
-            bytes: Array.from(bytes),
-            ext,
+          const wslPath = await invoke<string>("save_pasted_image", bytes, {
+            headers: {
+              "x-connection-mode": encodeURIComponent(connectionModeRef.current),
+              "x-distro": encodeURIComponent(context.distro),
+              "x-ext": encodeURIComponent(ext),
+            },
           });
           const currentConnectionId = connectionIdRef.current;
           const currentThreadId = activeThreadIdRef.current;
