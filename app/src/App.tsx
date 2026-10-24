@@ -56,6 +56,12 @@ import { formatLinkAddress, splitLineSuffix } from "./linkTarget";
 import { forcedEffortForModel } from "./modelEffort";
 import { PROJECT_SANDBOX, gitWritableRootsConfig } from "./sandboxConfig";
 import { turnModelFields } from "./turnModelFields";
+import {
+  codexCatalogJson,
+  effectiveContextWindow,
+  reasoningLevels,
+  type OllamaModelDetails,
+} from "./ollamaCatalog";
 import { creditBadge } from "./creditBadge";
 import { composerRequest } from "./composerRequest";
 import { isNearBottom } from "./scrollFollow";
@@ -330,6 +336,13 @@ export default function App() {
   const [ollamaModels, setOllamaModels] = useState<{ name: string; contextLength: number | null }[]>([]);
   const [ollamaModelsLoading, setOllamaModelsLoading] = useState(false);
   const ollamaRefreshInFlightRef = useRef(false);
+  const [ollamaModelDetails, setOllamaModelDetails] = useState<OllamaModelDetails | null>(null);
+  // Reasoning levels Ollama accepts for the current model, or null while
+  // unknown (turnModelFields then falls back to its xhigh rule).
+  const ollamaSupportedEfforts =
+    ollamaModelDetails && ollamaModelDetails.name === ollamaModel.trim()
+      ? reasoningLevels(ollamaModelDetails.thinking).levels
+      : null;
   // F-02a: history of folders the user has explicitly chosen via the native
   // Explorer picker (browseForProject) or that a resumed thread's own cwd
   // pointed at — never an automatic filesystem scan.
@@ -1595,6 +1608,18 @@ export default function App() {
     localStorage.setItem("provider", provider);
     localStorage.setItem("ollamaModel", ollamaModel);
     localStorage.setItem("ollamaContextWindow", ollamaContextWindow);
+    // Fresh per connect: the model may have been loaded (or its allocation
+    // changed) since the picker last asked. The コンテキスト長 field, which
+    // the user can override, stays the figure codex is told.
+    const details = provider === "ollama" ? await loadOllamaModelDetails(ollamaModel, false) : null;
+    const usableDetails = details && details.name === ollamaModel.trim() ? details : null;
+    const ollamaModelCatalog = usableDetails
+      ? codexCatalogJson(usableDetails, Number(ollamaContextWindow) || effectiveContextWindow(usableDetails))
+      : null;
+    // The model's own default level when Ollama reports one; otherwise the
+    // old fixed pin (see below for why there must be one).
+    const ollamaEffortPin =
+      (usableDetails && reasoningLevels(usableDetails.thinking).defaultLevel) ?? OLLAMA_DEFAULT_EFFORT;
     const configOverrides: string[] =
       provider === "ollama"
         ? [
@@ -1609,7 +1634,7 @@ export default function App() {
             // `codex exec -c model_provider=ollama` on 2026-08-02). Pin a
             // level Ollama accepts; picking one in the footer still wins,
             // since that travels per-turn on turn/start.
-            `model_reasoning_effort=${OLLAMA_DEFAULT_EFFORT}`,
+            `model_reasoning_effort=${ollamaEffortPin}`,
           ]
         : [];
     setConnState("connecting");
@@ -1621,6 +1646,7 @@ export default function App() {
         codexPath,
         configOverrides,
         useOllama: provider === "ollama",
+        ollamaModelCatalog,
       });
       const info = parseOrReport(InitializeResponseSchema, raw, "initialize", setErrorBanner);
       if (!info) {
@@ -1987,12 +2013,32 @@ export default function App() {
     }
   };
 
+  // Per-model facts (capabilities, accepted thinking values, context sizes)
+  // for the codex model catalog -- see ollamaCatalog.ts. `applyContext` also
+  // refills the コンテキスト長 field, which only happens when the user picks a
+  // model, so a value they typed by hand survives a mere refresh.
+  const loadOllamaModelDetails = async (name: string, applyContext: boolean) => {
+    if (!name.trim()) return null;
+    try {
+      const details = await invoke<OllamaModelDetails>("ollama_model_details", { name: name.trim() });
+      setOllamaModelDetails(details);
+      if (applyContext) setOllamaContextWindow(String(effectiveContextWindow(details)));
+      return details;
+    } catch (e) {
+      // Not fatal: without details codex runs on fallback metadata, as before.
+      console.warn(`ollama_model_details failed for ${name}: ${e}`);
+      setOllamaModelDetails(null);
+      return null;
+    }
+  };
+
   const onOllamaModelChange = (name: string) => {
     setOllamaModel(name);
     const found = ollamaModels.find((m) => m.name === name);
     if (found?.contextLength) {
       setOllamaContextWindow(String(found.contextLength));
     }
+    void loadOllamaModelDetails(name, true);
   };
 
   // Re-read `ollama list` every time the model picker becomes visible -- at
@@ -2003,6 +2049,7 @@ export default function App() {
   useEffect(() => {
     if (provider === "ollama" && connState === "disconnected") {
       void refreshOllamaModels();
+      void loadOllamaModelDetails(ollamaModel, false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [provider, connState]);
@@ -2400,7 +2447,7 @@ export default function App() {
         ...images.map((img) => ({ type: "localImage" as const, path: img.wslPath })),
         ...(text ? [{ type: "text" as const, text, text_elements: [] as never[] }] : []),
       ],
-      turnFields: turnModelFields(provider, modelOverride, ollamaModel, reasoningEffort, serviceTier),
+      turnFields: turnModelFields(provider, modelOverride, ollamaModel, reasoningEffort, serviceTier, ollamaSupportedEfforts),
       summary: REASONING_SUMMARY,
     });
 

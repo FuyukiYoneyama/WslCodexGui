@@ -55,3 +55,23 @@ test("Ollama keeps the reasoning levels it accepts", () => {
 test("Ollama drops xhigh, the one level it rejects", () => {
   assert.deepEqual(turnModelFields("ollama", null, "gpt-oss:20b", "xhigh", null), { model: "gpt-oss:20b" });
 });
+
+test("a known per-model list decides instead of the xhigh rule", () => {
+  // qwen3.8:27b accepts xhigh (its /api/show thinking values, 2026-10-24).
+  const qwen = ["none", "low", "medium", "xhigh"];
+  assert.deepEqual(turnModelFields("ollama", null, "qwen3.8:27b", "xhigh", null, qwen), {
+    model: "qwen3.8:27b",
+    effort: "xhigh",
+  });
+  assert.deepEqual(turnModelFields("ollama", null, "qwen3.8:27b", "max", null, qwen), { model: "qwen3.8:27b" });
+});
+
+test("a model with no reasoning levels gets no effort", () => {
+  assert.deepEqual(turnModelFields("ollama", null, "mistral-small3.2:latest", "high", null, []), {
+    model: "mistral-small3.2:latest",
+  });
+});
+
+test("the per-model list never applies to OpenAI", () => {
+  assert.deepEqual(turnModelFields("openai", null, "gpt-oss:20b", "xhigh", null, []), { effort: "xhigh" });
+});

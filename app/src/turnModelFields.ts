@@ -29,6 +29,13 @@
 // level Ollama does not accept -- its own rejection enumerates the valid set
 // as "high", "medium", "low", "max", "none". Both are dropped rather than
 // passed through to fail the turn. Everything else is unchanged for OpenAI.
+//
+// Since 2026-10-24 Ollama reports per model which values it accepts
+// (/api/show `thinking`, see ollamaCatalog.ts) -- qwen3.8 does take "xhigh",
+// for one. When that list is known it decides instead: an effort outside it
+// is dropped (codex then uses the model's default level from the catalog),
+// and a model with no levels at all gets no effort. codex itself forwards
+// whatever it is given, so this is the only place the check can happen.
 const OLLAMA_UNSUPPORTED_EFFORT = "xhigh";
 
 export function turnModelFields<E extends string, S extends string>(
@@ -36,12 +43,16 @@ export function turnModelFields<E extends string, S extends string>(
   modelOverride: string | null,
   ollamaModel: string,
   effort: E | null,
-  serviceTier: S | null
+  serviceTier: S | null,
+  ollamaSupportedEfforts: readonly string[] | null = null
 ): { model?: string; effort?: E; serviceTier?: S } {
   if (provider === "ollama") {
+    const effortOk =
+      effort !== null &&
+      (ollamaSupportedEfforts ? ollamaSupportedEfforts.includes(effort) : effort !== OLLAMA_UNSUPPORTED_EFFORT);
     return {
       ...(ollamaModel.trim() ? { model: ollamaModel.trim() } : {}),
-      ...(effort && effort !== OLLAMA_UNSUPPORTED_EFFORT ? { effort } : {}),
+      ...(effortOk ? { effort } : {}),
     };
   }
   return {

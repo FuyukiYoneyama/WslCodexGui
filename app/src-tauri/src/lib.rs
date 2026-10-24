@@ -87,7 +87,22 @@ async fn connect(
     codex_path: String,
     config_overrides: Vec<String>,
     use_ollama: bool,
+    ollama_model_catalog: Option<String>,
 ) -> Result<Value, RpcFailure> {
+    let mut config_overrides = config_overrides;
+    // Model metadata for the picked Ollama model (built by ollamaCatalog.ts in
+    // the shape `ollama launch codex` writes). Best effort: without it codex
+    // still runs, just on fallback metadata as before, so a write failure must
+    // not block connecting.
+    if let (true, Some(catalog)) = (use_ollama, ollama_model_catalog.as_deref()) {
+        match write_ollama_model_catalog(&connection_mode, &distro, catalog).await {
+            // TOML literal string: no escaping needed for either a /tmp path
+            // or a Windows path with backslashes.
+            Ok(path) => config_overrides.push(format!("model_catalog_json='{path}'")),
+            Err(e) => eprintln!("Ollama model catalog not written, continuing without it: {e}"),
+        }
+    }
+
     // Resolve the endpoint from the app-server's execution environment. The
     // Windows-side model-list route is deliberately separate and always uses
     // Windows loopback; a WSL app-server may instead need the NAT gateway.
@@ -603,6 +618,133 @@ fn reveal_in_explorer_native(path: String) -> Result<(), String> {
     Ok(())
 }
 
+const OLLAMA_MODEL_CATALOG_FILENAME: &str = "wslcodexgui-ollama-models.json";
+
+/// Write the codex model catalog where the app-server can read it: /tmp in
+/// WSL (via the \\wsl.localhost UNC path, as save_pasted_image does), or the
+/// Windows temp dir in native mode. One fixed file, overwritten per connect,
+/// so nothing accumulates. Returns the path as the app-server sees it.
+async fn write_ollama_model_catalog(
+    connection_mode: &str,
+    distro: &str,
+    catalog: &str,
+) -> Result<String, String> {
+    serde_json::from_str::<Value>(catalog).map_err(|e| format!("catalog is not JSON: {e}"))?;
+    if connection_mode == "native" {
+        let path = std::env::temp_dir().join(OLLAMA_MODEL_CATALOG_FILENAME);
+        tokio::fs::write(&path, catalog)
+            .await
+            .map_err(|e| format!("failed to write {}: {e}", path.display()))?;
+        return Ok(path.to_string_lossy().into_owned());
+    }
+    validate_distro(distro)?;
+    let win_path = format!("\\\\wsl.localhost\\{distro}\\tmp\\{OLLAMA_MODEL_CATALOG_FILENAME}");
+    tokio::fs::write(&win_path, catalog)
+        .await
+        .map_err(|e| format!("failed to write {win_path}: {e}"))?;
+    Ok(format!("/tmp/{OLLAMA_MODEL_CATALOG_FILENAME}"))
+}
+
+/// Run curl.exe against the Windows-side Ollama and parse the JSON reply.
+/// `body` switches to POST (Ollama's /api/show takes the model in the body).
+async fn ollama_json(path: &str, body: Option<&Value>) -> Result<Value, String> {
+    let url = format!("{OLLAMA_WINDOWS_ROOT}{path}");
+    let mut cmd = tokio::process::Command::new("curl.exe");
+    cmd.args(["-sS", "--max-time", "10"]);
+    let body_text = body.map(|b| b.to_string());
+    if let Some(text) = &body_text {
+        cmd.args(["-H", "Content-Type: application/json", "--data-binary", text]);
+    }
+    cmd.arg(&url);
+    #[cfg(windows)]
+    cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    let output = cmd
+        .output()
+        .await
+        .map_err(|e| format!("curl.exe を実行できませんでした（{url} への問い合わせ）: {e}"))?;
+    if !output.status.success() {
+        return Err(ollama_curl_error(
+            &url,
+            output.status.code(),
+            &String::from_utf8_lossy(&output.stderr),
+        ));
+    }
+    serde_json::from_slice(&output.stdout)
+        .map_err(|e| format!("{url} からの応答をJSONとして解釈できませんでした: {e}"))
+}
+
+/// Raw facts about one Ollama model, for ollamaCatalog.ts to turn into codex
+/// metadata the way `ollama launch codex` does: /api/show (capabilities,
+/// accepted thinking values, trained context), /api/tags (listed context),
+/// /api/ps (context actually allocated, if loaded) and OLLAMA_CONTEXT_LENGTH.
+/// Only /api/show is required; the rest degrade to null.
+#[tauri::command]
+async fn ollama_model_details(name: String) -> Result<Value, String> {
+    let show = ollama_json("/api/show", Some(&json!({ "model": name }))).await?;
+    if let Some(error) = show.get("error").and_then(|v| v.as_str()) {
+        return Err(format!("Ollamaがモデル `{name}` の情報を返しませんでした: {error}"));
+    }
+    let tags = ollama_json("/api/tags", None).await.ok();
+    let ps = ollama_json("/api/ps", None).await.ok();
+    let env_context = std::env::var("OLLAMA_CONTEXT_LENGTH")
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .filter(|n| *n > 0);
+    Ok(ollama_model_details_from(&name, &show, tags.as_ref(), ps.as_ref(), env_context))
+}
+
+fn ollama_model_details_from(
+    name: &str,
+    show: &Value,
+    tags: Option<&Value>,
+    ps: Option<&Value>,
+    env_context: Option<u64>,
+) -> Value {
+    let positive = |v: &Value| v.as_u64().filter(|n| *n > 0);
+    let show_context = show
+        .get("model_info")
+        .and_then(|m| m.as_object())
+        .and_then(|m| {
+            m.iter()
+                .find(|(k, _)| k.ends_with(".context_length"))
+                .and_then(|(_, v)| positive(v))
+        });
+    let same = |candidate: Option<&str>| {
+        candidate.is_some_and(|c| c == name || c.strip_suffix(":latest") == Some(name))
+    };
+    let list_context = tags
+        .and_then(|t| t.get("models"))
+        .and_then(|m| m.as_array())
+        .and_then(|models| {
+            models
+                .iter()
+                .find(|m| same(m.get("name").and_then(|v| v.as_str())))
+        })
+        .and_then(|m| m.get("details"))
+        .and_then(|d| d.get("context_length"))
+        .and_then(positive);
+    let loaded_context = ps
+        .and_then(|p| p.get("models"))
+        .and_then(|m| m.as_array())
+        .and_then(|models| {
+            models.iter().find(|m| {
+                same(m.get("name").and_then(|v| v.as_str()))
+                    || same(m.get("model").and_then(|v| v.as_str()))
+            })
+        })
+        .and_then(|m| m.get("context_length"))
+        .and_then(positive);
+    json!({
+        "name": name,
+        "capabilities": show.get("capabilities").cloned().unwrap_or_else(|| json!([])),
+        "thinking": show.get("thinking").cloned().unwrap_or(Value::Null),
+        "showContextLength": show_context,
+        "listContextLength": list_context,
+        "loadedContextLength": loaded_context,
+        "envContextLength": env_context,
+    })
+}
+
 #[derive(serde::Serialize)]
 struct OllamaModelInfo {
     name: String,
@@ -1034,6 +1176,7 @@ pub fn run() {
             delete_pasted_image,
             windows_path_to_wsl,
             list_ollama_models,
+            ollama_model_details,
             list_wsl_distros,
             detect_codex_path,
             verify_codex_path,
@@ -1049,12 +1192,52 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::{
-        ollama_curl_error, ollama_host_binding_hint, ollama_root_for_host, parse_default_gateway,
-        pasted_image_filename, pasted_image_filename_native, strip_wsl_unc, validate_distro,
-        wsl_exec_args,
+        ollama_curl_error, ollama_host_binding_hint, ollama_model_details_from,
+        ollama_root_for_host, parse_default_gateway, pasted_image_filename,
+        pasted_image_filename_native, strip_wsl_unc, validate_distro, wsl_exec_args,
     };
+    use serde_json::json;
 
     const URL: &str = "http://127.0.0.1:11434/api/tags";
+
+    // Shapes as returned by Ollama 0.40.10 on 2026-10-24 (trimmed).
+    #[test]
+    fn ollama_model_details_collects_every_source() {
+        let show = json!({
+            "capabilities": ["completion", "tools", "thinking"],
+            "thinking": {"values": ["low", "medium", "high"], "default": "medium"},
+            "model_info": {"general.architecture": "gptoss", "gptoss.context_length": 131072},
+        });
+        let tags = json!({"models": [
+            {"name": "gemma4:cloud", "details": {"context_length": 262144}},
+            {"name": "gpt-oss:20b", "details": {"context_length": 131072}},
+        ]});
+        let ps = json!({"models": [{"name": "gpt-oss:20b", "model": "gpt-oss:20b", "context_length": 8192}]});
+        let d = ollama_model_details_from("gpt-oss:20b", &show, Some(&tags), Some(&ps), Some(32768));
+        assert_eq!(d["name"], "gpt-oss:20b");
+        assert_eq!(d["capabilities"][1], "tools");
+        assert_eq!(d["thinking"]["default"], "medium");
+        assert_eq!(d["showContextLength"], 131072);
+        assert_eq!(d["listContextLength"], 131072);
+        assert_eq!(d["loadedContextLength"], 8192);
+        assert_eq!(d["envContextLength"], 32768);
+    }
+
+    #[test]
+    fn ollama_model_details_tolerates_missing_sources() {
+        let d = ollama_model_details_from("mistral-small3.2", &json!({}), None, None, None);
+        assert_eq!(d["capabilities"], json!([]));
+        assert!(d["thinking"].is_null());
+        assert!(d["showContextLength"].is_null());
+        assert!(d["loadedContextLength"].is_null());
+    }
+
+    #[test]
+    fn ollama_model_details_matches_an_implicit_latest_tag() {
+        let tags = json!({"models": [{"name": "mistral-small3.2:latest", "details": {"context_length": 131072}}]});
+        let d = ollama_model_details_from("mistral-small3.2", &json!({}), Some(&tags), None, None);
+        assert_eq!(d["listContextLength"], 131072);
+    }
 
     // The whole point of the message: someone whose Ollama *is* running has to
     // be able to see that this looked somewhere else.
