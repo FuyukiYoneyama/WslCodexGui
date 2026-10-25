@@ -62,7 +62,7 @@ npm install -g @openai/codex@latest
 
 [Releases](https://github.com/FuyukiYoneyama/WslCodexGui/releases) から、NSISインストーラ（`WslCodexGui_<バージョン>_x64-setup.exe`）をダウンロードして実行します。
 
-> **公開中の0.5.62インストーラは未署名です。** GitHub Releaseからブラウザで取得した版では、Edgeの「一般的にダウンロードされていません」と、起動時のWindows SmartScreen「WindowsによってPCが保護されました」を確認しました。警告が出ることを前提にダウンロードしてください。
+> **公開中の0.5.63インストーラは未署名です。** 0.5.62をGitHub Releaseからブラウザで取得した試験では、Edgeの「一般的にダウンロードされていません」と、起動時のWindows SmartScreen「WindowsによってPCが保護されました」を確認しました。警告が出ることを前提にダウンロードしてください。
 > 続行する場合は、配布元とReleasesに載せているSHA-256を確認してから、ご自身の判断で「詳細情報」→「実行」を選んでください。
 >
 > ```powershell
