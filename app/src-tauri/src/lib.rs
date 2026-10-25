@@ -109,6 +109,7 @@ async fn connect(
     // Windows-side model-list route is deliberately separate and always uses
     // Windows loopback; a WSL app-server may instead need the NAT gateway.
     let ollama_codex_base_url = if use_ollama {
+        ensure_ollama_running().await.map_err(RpcFailure::from)?;
         Some(
             resolve_ollama_codex_base_url(&connection_mode, &distro)
                 .await
@@ -763,6 +764,7 @@ async fn ollama_json(path: &str, body: Option<&Value>) -> Result<Value, String> 
 /// Only /api/show is required; the rest degrade to null.
 #[tauri::command]
 async fn ollama_model_details(name: String) -> Result<Value, String> {
+    ensure_ollama_running().await?;
     let show = ollama_json("/api/show", Some(&json!({ "model": name }))).await?;
     if let Some(error) = show.get("error").and_then(|v| v.as_str()) {
         return Err(format!(
@@ -932,6 +934,87 @@ fn ollama_host_binding_hint(raw: &str) -> Option<&str> {
     }
 }
 
+/// Start the installed Windows Ollama CLI when its local API is unavailable.
+/// The lock prevents the model-list and model-details requests
+/// from launching two servers while the first one is still starting.
+async fn ensure_ollama_running() -> Result<(), String> {
+    static START_LOCK: std::sync::OnceLock<Mutex<()>> = std::sync::OnceLock::new();
+    let url = format!("{OLLAMA_WINDOWS_ROOT}/api/tags");
+    let probe = ollama_api_probe(&url).await?;
+    if probe.status.success() {
+        return Ok(());
+    }
+
+    let _guard = START_LOCK.get_or_init(|| Mutex::new(())).lock().await;
+    let probe = ollama_api_probe(&url).await?;
+    if probe.status.success() {
+        return Ok(());
+    }
+
+    let cli = std::env::var_os("LOCALAPPDATA")
+        .map(std::path::PathBuf::from)
+        .map(|dir| dir.join("Programs").join("Ollama").join("ollama.exe"))
+        .filter(|path| path.is_file())
+        .unwrap_or_else(|| std::path::PathBuf::from("ollama.exe"));
+    let mut command = tokio::process::Command::new(&cli);
+    command
+        .arg("serve")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    #[cfg(windows)]
+    command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    let mut child = command.spawn().map_err(|e| {
+        format!(
+            "Ollama CLIを起動できませんでした（{} serve）: {e}。Ollamaのインストールを確認してください。",
+            cli.display()
+        )
+    })?;
+
+    let mut last_probe = probe;
+    for _ in 0..30 {
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        last_probe = ollama_api_probe(&url).await?;
+        if last_probe.status.success() {
+            return Ok(());
+        }
+        if let Some(status) = child
+            .try_wait()
+            .map_err(|e| format!("Ollama CLIの起動状態を確認できませんでした: {e}"))?
+        {
+            return Err(format!(
+                "Ollama CLIが終了しました（{status}）。{url} の待ち受け設定を確認してください。"
+            ));
+        }
+    }
+    let mut message = format!(
+        "Ollama CLIを起動しましたが、{url} が応答しませんでした: {}",
+        ollama_curl_error(
+            &url,
+            last_probe.status.code(),
+            &String::from_utf8_lossy(&last_probe.stderr)
+        )
+    );
+    if let Some(host) = std::env::var("OLLAMA_HOST")
+        .ok()
+        .and_then(|value| ollama_host_binding_hint(&value).map(str::to_string))
+    {
+        message.push_str(&format!("\nOLLAMA_HOST は `{host}` です。127.0.0.1 を含む待受設定（例: 0.0.0.0:11434）を確認してください。"));
+    }
+    Err(message)
+}
+
+async fn ollama_api_probe(url: &str) -> Result<std::process::Output, String> {
+    let mut command = tokio::process::Command::new("curl.exe");
+    command.args(["-fsS", "--connect-timeout", "1", "--max-time", "2", url]);
+    #[cfg(windows)]
+    command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    command
+        .output()
+        .await
+        .map_err(|e| format!("curl.exe を実行できませんでした（{url} への問い合わせ）: {e}"))
+}
+
 /// List locally pulled Ollama models (name + real context length) from
 /// Ollama's native /api/tags (not the OpenAI-compat /v1/models codex itself
 /// queries, which is why codex falls back to generic metadata for unknown
@@ -941,12 +1024,16 @@ fn ollama_host_binding_hint(raw: &str) -> Option<&str> {
 /// cross-origin request at all.
 #[tauri::command]
 async fn list_ollama_models() -> Result<Vec<OllamaModelInfo>, String> {
+    ensure_ollama_running().await?;
     // Every failure below names the URL that was tried. "Ollama is installed
     // and running, but this says it isn't" is only diagnosable if the message
     // says where it looked.
     let url = format!("{OLLAMA_WINDOWS_ROOT}/api/tags");
-    let output = tokio::process::Command::new("curl.exe")
-        .args(["-sS", &url])
+    let mut command = tokio::process::Command::new("curl.exe");
+    command.args(["-sS", &url]);
+    #[cfg(windows)]
+    command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    let output = command
         .output()
         .await
         .map_err(|e| format!("curl.exe を実行できませんでした（{url} への問い合わせ）: {e}"))?;

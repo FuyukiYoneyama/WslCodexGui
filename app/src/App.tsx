@@ -2040,6 +2040,9 @@ export default function App() {
     try {
       const models = await invoke<{ name: string; context_length: number | null }[]>("list_ollama_models");
       setOllamaModels(models.map((m) => ({ name: m.name, contextLength: m.context_length })));
+      setErrorBanner((current) =>
+        current?.startsWith("Ollamaのモデル一覧を取得できませんでした。") ? null : current
+      );
     } catch (e) {
       // Stays a banner rather than a quiet inline notice: the user has just
       // chosen Ollama, so a failure here is a real problem to surface, not an

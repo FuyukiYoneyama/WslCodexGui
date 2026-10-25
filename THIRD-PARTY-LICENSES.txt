@@ -7,7 +7,7 @@ It includes the third-party components listed below, each under its own
 license. Their copyright notices and license texts are reproduced here as
 those licenses require.
 
-Generated for version 0.5.62 by app/scripts/generate-third-party-licenses.mjs.
+Generated for version 0.5.63 by app/scripts/generate-third-party-licenses.mjs.
 Rust crates: 224   npm packages: 109
 
 ==============================================================================
@@ -1940,7 +1940,7 @@ SOFTWARE.
 MIT License (MIT)
 
 Used by:
-  app 0.5.62
+  app 0.5.63
   brotli-decompressor 5.0.3
   dpi 0.1.2
   siphasher 1.0.3

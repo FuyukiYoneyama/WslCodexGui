@@ -34,6 +34,8 @@ WSL2の中に入れたCodex CLI（またはWindowsに直接入れたCodex CLI）
 
 どちらの方式でも、アプリとCodex CLIは標準入出力で直接つながり、ネットワークポートは使いません。
 
+Ollamaを使う場合は、Windows側にOllama CLIをインストールしてください。Ollamaを選ぶと、ローカルAPIが停止している場合にアプリが`ollama serve`を起動し、モデル一覧を取得します。Ollamaのモデルは別途取得が必要です。
+
 ## インストール
 
 ### 1. Codex CLIを入れる
