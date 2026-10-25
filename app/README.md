@@ -81,7 +81,7 @@ GUI（Tauri 2 + React）から操作するためのラッパーアプリです�
 | 項目 | 要件 |
 |---|---|
 | OS | Windows 10/11、WSL2が有効なこと |
-| Rust | `rustup`経由の最新stable（**1.75以上必須**。開発時は1.97.1で確認済み。Tauri 2は古いRustではビルドできない） |
+| Rust | `rustup`経由の最新stableを推奨（コードで使う`slice::as_chunks`には**1.88以上**が必要。ローカルは1.97.1、v0.5.61のCIは1.99で確認） |
 | Node.js | 18以上（開発時はv22.18.0で確認） |
 | MSVC Build Tools | Visual Studio Build Tools（または Visual Studio）の「C++によるデスクトップ開発」ワークロード |
 | WebView2 Runtime | Windows 11は標準搭載。Windows 10は別途インストールが必要な場合あり |
@@ -130,7 +130,7 @@ PowerShellで以下を実行します。
 ```powershell
 # Rust（未導入なら https://rustup.rs/ からrustupを入れてから）
 rustup update stable
-rustc --version    # 1.75以上であること
+rustc --version    # 1.88以上であること（最新stableを推奨）
 
 # Node.js（未導入なら https://nodejs.org/ から。またはwinget/choco等で）
 node --version
