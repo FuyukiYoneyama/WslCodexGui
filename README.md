@@ -67,6 +67,8 @@ npm install -g @openai/codex@latest
 > Get-FileHash .\WslCodexGui_<バージョン>_x64-setup.exe
 > ```
 
+旧版から更新する場合、SmartScreenの警告が出れば上記の手順で実行を許可してください。インストーラーが起動した後は、旧版のアンインストール画面を経ずに上書き更新します。
+
 ### 3. 初回の接続
 
 アプリを起動すると、接続の設定画面が出ます。
