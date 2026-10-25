@@ -79,6 +79,8 @@ struct AppState {
 }
 
 #[tauri::command]
+// Each parameter is supplied by the frontend invoke contract.
+#[allow(clippy::too_many_arguments)]
 async fn connect(
     app: AppHandle,
     state: State<'_, AppState>,
@@ -262,7 +264,10 @@ fn percent_decode(value: &str) -> String {
     let mut i = 0;
     while i < bytes.len() {
         if bytes[i] == b'%' && i + 2 < bytes.len() {
-            if let Some(b) = value.get(i + 1..i + 3).and_then(|h| u8::from_str_radix(h, 16).ok()) {
+            if let Some(b) = value
+                .get(i + 1..i + 3)
+                .and_then(|h| u8::from_str_radix(h, 16).ok())
+            {
                 out.push(b);
                 i += 3;
                 continue;
@@ -697,7 +702,12 @@ async fn ollama_json(path: &str, body: Option<&Value>) -> Result<Value, String> 
     cmd.args(["-sS", "--max-time", "10"]);
     let body_text = body.map(|b| b.to_string());
     if let Some(text) = &body_text {
-        cmd.args(["-H", "Content-Type: application/json", "--data-binary", text]);
+        cmd.args([
+            "-H",
+            "Content-Type: application/json",
+            "--data-binary",
+            text,
+        ]);
     }
     cmd.arg(&url);
     #[cfg(windows)]
@@ -726,7 +736,9 @@ async fn ollama_json(path: &str, body: Option<&Value>) -> Result<Value, String> 
 async fn ollama_model_details(name: String) -> Result<Value, String> {
     let show = ollama_json("/api/show", Some(&json!({ "model": name }))).await?;
     if let Some(error) = show.get("error").and_then(|v| v.as_str()) {
-        return Err(format!("Ollamaがモデル `{name}` の情報を返しませんでした: {error}"));
+        return Err(format!(
+            "Ollamaがモデル `{name}` の情報を返しませんでした: {error}"
+        ));
     }
     let tags = ollama_json("/api/tags", None).await.ok();
     let ps = ollama_json("/api/ps", None).await.ok();
@@ -734,7 +746,13 @@ async fn ollama_model_details(name: String) -> Result<Value, String> {
         .ok()
         .and_then(|v| v.trim().parse::<u64>().ok())
         .filter(|n| *n > 0);
-    Ok(ollama_model_details_from(&name, &show, tags.as_ref(), ps.as_ref(), env_context))
+    Ok(ollama_model_details_from(
+        &name,
+        &show,
+        tags.as_ref(),
+        ps.as_ref(),
+        env_context,
+    ))
 }
 
 fn ollama_model_details_from(
@@ -1237,8 +1255,9 @@ pub fn run() {
 mod tests {
     use super::{
         ollama_curl_error, ollama_host_binding_hint, ollama_model_details_from,
-        ollama_root_for_host, parse_default_gateway, pasted_image_filename, percent_decode,
-        pasted_image_filename_native, strip_wsl_unc, validate_distro, wsl_exec_args,
+        ollama_root_for_host, parse_default_gateway, pasted_image_filename,
+        pasted_image_filename_native, percent_decode, strip_wsl_unc, validate_distro,
+        wsl_exec_args,
     };
     use serde_json::json;
 
@@ -1268,7 +1287,8 @@ mod tests {
             {"name": "gpt-oss:20b", "details": {"context_length": 131072}},
         ]});
         let ps = json!({"models": [{"name": "gpt-oss:20b", "model": "gpt-oss:20b", "context_length": 8192}]});
-        let d = ollama_model_details_from("gpt-oss:20b", &show, Some(&tags), Some(&ps), Some(32768));
+        let d =
+            ollama_model_details_from("gpt-oss:20b", &show, Some(&tags), Some(&ps), Some(32768));
         assert_eq!(d["name"], "gpt-oss:20b");
         assert_eq!(d["capabilities"][1], "tools");
         assert_eq!(d["thinking"]["default"], "medium");
@@ -1418,11 +1438,8 @@ mod tests {
 
     #[test]
     fn unc_path_for_another_distro_is_rejected() {
-        let error = strip_wsl_unc(
-            r"\\wsl.localhost\Ubuntu\home\user\project",
-            "Ubuntu-24.04",
-        )
-        .unwrap_err();
+        let error =
+            strip_wsl_unc(r"\\wsl.localhost\Ubuntu\home\user\project", "Ubuntu-24.04").unwrap_err();
         assert!(error.contains("Ubuntu"));
         assert!(error.contains("Ubuntu-24.04"));
     }
