@@ -94,9 +94,9 @@ interface WslDistroInfo {
   is_default: boolean;
 }
 
-// ENV-01 (spec 4.3): last confirmed-working values on this machine. Used as
-// the initial default only — still overridable and persisted per N-20/F-02a.
-const DEFAULT_CODEX_PATH = "/home/user/.nvm/versions/node/v22.22.2/bin/codex";
+// Start with no machine-specific Codex path; detect it in the selected mode.
+const DEFAULT_CODEX_PATH = "";
+const WSL_SETUP_NOTICE = "WSLディストリを取得できませんでした。WSLをセットアップするか、接続方式で「Windows側のcodex CLI」を選んでください。";
 const DEFAULT_PROJECT_PATH = "/home/user";
 // Sticks on every connect until the user picks something else via the 🧠
 // footer badge (openModelPicker/pickModel) — only applies to the OpenAI
@@ -1077,11 +1077,13 @@ export default function App() {
   // wsl.exe probe can never overwrite the state of a later check.
   const codexCheckGenRef = useRef(0);
   const verifyTimerRef = useRef<number | undefined>(undefined);
+  const wslDistroErrorRef = useRef(false);
 
   // Resolve the codex path for `d`: verify `candidate` first if given (a
   // previously saved/typed path), otherwise (or if it no longer exists)
   // auto-detect inside the distro. Only an "ok" outcome enables connect.
   const resolveCodexPath = useCallback(async (d: string, candidate: string | null) => {
+    wslDistroErrorRef.current = false;
     const gen = ++codexCheckGenRef.current;
     window.clearTimeout(verifyTimerRef.current);
     setCodexStatus("checking");
@@ -1142,7 +1144,7 @@ export default function App() {
         setCodexPath("");
         setCodexStatus("ng");
         setCodexNotice(
-          "Windows側でcodexが見つかりませんでした。PowerShellで `where codex` を実行し、表示された絶対パス（拡張子.cmdのものを推奨）を手入力してください。"
+          "Windows側でcodexが見つかりませんでした。PowerShellで `where.exe codex` を実行し、表示された絶対パス（拡張子.cmdのものを推奨）を手入力してください。"
         );
       }
     } catch (e) {
@@ -1165,6 +1167,7 @@ export default function App() {
       const storedPath = localStorage.getItem("codexPath") ?? DEFAULT_CODEX_PATH;
       try {
         const list = await invoke<WslDistroInfo[]>("list_wsl_distros");
+        wslDistroErrorRef.current = false;
         setDistros(list);
         const chosen =
           list.find((d) => d.name === storedDistro)?.name ??
@@ -1174,12 +1177,17 @@ export default function App() {
         // The saved codex path only makes sense for the distro it was saved
         // with; for any other distro start from auto-detection.
         const candidate = storedDistro === null || storedDistro === chosen ? storedPath : null;
-        void resolveCodexPath(chosen, candidate);
+        if (connectionModeRef.current === "wsl") void resolveCodexPath(chosen, candidate);
       } catch (e) {
-        // wsl.exe unavailable or no distros: keep the free-text fallback
-        // input and still try to validate whatever path is stored.
-        setErrorBanner(`WSLディストリ一覧の取得に失敗しました: ${e}`);
-        void resolveCodexPath(storedDistro ?? "Ubuntu-24.04", storedPath);
+        // Keep the free-text distro fallback, but do not start a Codex check
+        // against a distro that enumeration could not confirm.
+        console.warn("WSLディストリ一覧の取得に失敗しました", e);
+        wslDistroErrorRef.current = true;
+        if (connectionModeRef.current === "wsl") {
+          ++codexCheckGenRef.current;
+          setCodexStatus("ng");
+          setCodexNotice(WSL_SETUP_NOTICE);
+        }
       }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1207,7 +1215,13 @@ export default function App() {
       setCodexPath(storedPath);
       setProjectPaths(paths);
       setProjectCwd(localStorage.getItem("projectCwd") ?? paths[0] ?? "");
-      void resolveCodexPath(distroRef.current, storedPath);
+      if (wslDistroErrorRef.current) {
+        ++codexCheckGenRef.current;
+        setCodexStatus("ng");
+        setCodexNotice(WSL_SETUP_NOTICE);
+      } else {
+        void resolveCodexPath(distroRef.current, storedPath);
+      }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [connectionMode]);
@@ -1611,7 +1625,9 @@ export default function App() {
   const doConnect = async (): Promise<boolean> => {
     if (!codexPath.trim()) {
       setErrorBanner(
-        "WSL内のcodex実行ファイルの絶対パスを入力してください。WSLターミナルで `which codex` を実行すると確認できます（例: /home/user/.nvm/versions/node/v22.22.2/bin/codex）。灰色の文字は入力例であり、値は未入力です。"
+        connectionMode === "native"
+          ? "Windows側のcodex実行ファイルの絶対パスを入力してください。PowerShellで `where.exe codex` を実行すると確認できます。"
+          : "WSL内のcodex実行ファイルの絶対パスを入力してください。WSLターミナルで `which codex` を実行すると確認できます。"
       );
       return false;
     }
@@ -1712,7 +1728,11 @@ export default function App() {
       // first and falls back to auto-detection within the distro, updating
       // codexStatus/codexNotice (and codexPath itself, if a new one is
       // found) so the connect button's enabled state reflects reality again.
-      void resolveCodexPath(distro, codexPath);
+      if (connectionMode === "native") {
+        void resolveCodexPathNative(codexPath);
+      } else {
+        void resolveCodexPath(distro, codexPath);
+      }
       return false;
     }
   };
@@ -2672,8 +2692,8 @@ export default function App() {
               onChange={(e) => onCodexPathInput(e.target.value)}
               placeholder={
                 connectionMode === "native"
-                  ? String.raw`C:\Users\user\AppData\Roaming\npm\codex.cmd`
-                  : "/home/user/.nvm/.../bin/codex"
+                  ? "Windows側のcodex.cmdの絶対パス"
+                  : "WSL内のcodexの絶対パス"
               }
             />
           </label>
