@@ -60,14 +60,16 @@ npm install -g @openai/codex@latest
 
 [Releases](https://github.com/FuyukiYoneyama/WslCodexGui/releases) から、NSISインストーラ（`WslCodexGui_<バージョン>_x64-setup.exe`）をダウンロードして実行します。
 
-> **インストーラには電子署名がありません。** そのため、Windows SmartScreenが「WindowsによってPCが保護されました」などの警告を出すことがあります。
-> 配布元を確認したうえで、「詳細情報」→「実行」で進めてください。Releasesに載せているSHA-256と、ダウンロードしたファイルの値が一致するかも確かめられます。
+> **公開中の0.5.62インストーラは未署名です。** GitHub Releaseからブラウザで取得した版では、Edgeの「一般的にダウンロードされていません」と、起動時のWindows SmartScreen「WindowsによってPCが保護されました」を確認しました。警告が出ることを前提にダウンロードしてください。
+> 続行する場合は、配布元とReleasesに載せているSHA-256を確認してから、ご自身の判断で「詳細情報」→「実行」を選んでください。
 >
 > ```powershell
 > Get-FileHash .\WslCodexGui_<バージョン>_x64-setup.exe
 > ```
 
-旧版から更新する場合、SmartScreenの警告が出れば上記の手順で実行を許可してください。インストーラーが起動した後は、旧版のアンインストール画面を経ずに上書き更新します。
+![ブラウザ取得版の起動時に表示されたSmartScreen警告（ユーザー提供の画面）](docs/images/smartscreen-warning-v0.5.62.png)
+
+旧版から更新する場合も、警告画面の後にインストーラーを起動します。インストーラーが起動した後は、旧版のアンインストール画面を経ずに上書き更新します。
 
 ### 3. 初回の接続
 
