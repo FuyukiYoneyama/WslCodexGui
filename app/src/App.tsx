@@ -97,7 +97,6 @@ interface WslDistroInfo {
 // Start with no machine-specific Codex path; detect it in the selected mode.
 const DEFAULT_CODEX_PATH = "";
 const WSL_SETUP_NOTICE = "WSLディストリを取得できませんでした。WSLをセットアップするか、接続方式で「Windows側のcodex CLI」を選んでください。";
-const DEFAULT_PROJECT_PATH = "/home/user";
 // Sticks on every connect until the user picks something else via the 🧠
 // footer badge (openModelPicker/pickModel) — only applies to the OpenAI
 // provider; Ollama has its own separate model field. Points at the head of
@@ -347,12 +346,12 @@ export default function App() {
   // Explorer picker (browseForProject) or that a resumed thread's own cwd
   // pointed at — never an automatic filesystem scan.
   const [projectPaths, setProjectPaths] = useState<string[]>(() =>
-    loadStringList(projectPathsStorageKey, connectionMode === "native" ? [] : [DEFAULT_PROJECT_PATH])
+    loadStringList(projectPathsStorageKey, [])
   );
   const [projectCwd, setProjectCwd] = useState(
     () =>
       localStorage.getItem(projectCwdStorageKey) ??
-      loadStringList(projectPathsStorageKey, connectionMode === "native" ? [] : [DEFAULT_PROJECT_PATH])[0] ??
+      loadStringList(projectPathsStorageKey, [])[0] ??
       ""
   );
   // Applies the next time a thread is first loaded by the running
@@ -1211,7 +1210,7 @@ export default function App() {
       void resolveCodexPathNative(storedPath || null);
     } else {
       const storedPath = localStorage.getItem("codexPath") ?? DEFAULT_CODEX_PATH;
-      const paths = loadStringList("projectPaths", [DEFAULT_PROJECT_PATH]);
+      const paths = loadStringList("projectPaths", []);
       setCodexPath(storedPath);
       setProjectPaths(paths);
       setProjectCwd(localStorage.getItem("projectCwd") ?? paths[0] ?? "");
@@ -2005,7 +2004,8 @@ export default function App() {
         localStorage.setItem(projectCwdStorageKey, picked);
         return;
       }
-      const startUnc = `\\\\wsl.localhost\\${distro}\\${(projectCwd || DEFAULT_PROJECT_PATH)
+      const startPath = projectCwd.trim() || await invoke<string>("wsl_home", { distro });
+      const startUnc = `\\\\wsl.localhost\\${distro}\\${startPath
         .replace(/^\//, "")
         .replace(/\//g, "\\")}`;
       const picked = await open({ directory: true, defaultPath: startUnc });
@@ -2608,7 +2608,7 @@ export default function App() {
   // not an automatic scan.
   const onProjectSelectChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
     setProjectCwd(e.target.value);
-    localStorage.setItem("projectCwd", e.target.value);
+    localStorage.setItem(projectCwdStorageKey, e.target.value);
   };
 
   const approval = approvals[0];
@@ -2884,6 +2884,10 @@ export default function App() {
               {connectionMode === "native" ? "フォルダ（参照で選んだフォルダの履歴）" : "WSLパス（参照で選んだフォルダの履歴）"}
               <div className="project-path-row">
                 <select value={projectCwd} onChange={onProjectSelectChange} title={projectCwd}>
+                  <option value="" disabled>プロジェクトを選択してください</option>
+                  {projectCwd && !projectPaths.includes(projectCwd) && (
+                    <option value={projectCwd}>{projectCwd}</option>
+                  )}
                   {projectPaths.map((p) => (
                     <option key={p} value={p} title={p}>
                       {p}

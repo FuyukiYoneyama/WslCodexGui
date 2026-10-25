@@ -446,6 +446,33 @@ fn wsl_exec_args<'a>(distro: &'a str, command_args: &'a [&'a str]) -> Vec<&'a st
     args
 }
 
+/// Return the selected distro's default user's home for the folder picker.
+#[tauri::command]
+async fn wsl_home(distro: String) -> Result<String, String> {
+    validate_distro(&distro)?;
+    let mut cmd = tokio::process::Command::new("wsl.exe");
+    cmd.args(wsl_exec_args(&distro, &["printenv", "HOME"]));
+    #[cfg(windows)]
+    cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    let output = cmd
+        .output()
+        .await
+        .map_err(|e| format!("failed to read WSL home: {e}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "failed to read WSL home: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    let home =
+        String::from_utf8(output.stdout).map_err(|e| format!("invalid WSL home encoding: {e}"))?;
+    let home = home.trim();
+    if !home.starts_with('/') || home.contains('\0') {
+        return Err("WSL home must be an absolute path".into());
+    }
+    Ok(home.to_string())
+}
+
 #[tauri::command]
 async fn detect_codex_path(distro: String) -> Result<Option<String>, String> {
     validate_distro(&distro)?;
@@ -1242,6 +1269,7 @@ pub fn run() {
             list_ollama_models,
             ollama_model_details,
             list_wsl_distros,
+            wsl_home,
             detect_codex_path,
             verify_codex_path,
             detect_codex_path_native,
