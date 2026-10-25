@@ -524,6 +524,22 @@ Function .onInit
   !if "${INSTALLMODE}" == "both"
     !insertmacro MULTIUSER_INIT
   !endif
+
+  ; An installed older NSIS version upgrades in place with one launch.
+  ; Passive mode skips the maintenance and directory pages; update mode keeps
+  ; the existing location, data and shortcuts while replacing app files.
+  ReadRegStr $R1 SHCTX "${UNINSTKEY}" "DisplayVersion"
+  ReadRegStr $R2 SHCTX "${UNINSTKEY}" "UninstallString"
+  ${If} $R1 != ""
+  ${AndIf} $R2 != ""
+  ${AndIf} ${FileExists} "$INSTDIR\${MAINBINARYNAME}.exe"
+    nsis_tauri_utils::SemverCompare "${VERSION}" $R1
+    Pop $R0
+    ${If} $R0 = 1
+      StrCpy $UpdateMode 1
+      StrCpy $PassiveMode 1
+    ${EndIf}
+  ${EndIf}
 FunctionEnd
 
 
