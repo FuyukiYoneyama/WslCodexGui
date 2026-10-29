@@ -7,7 +7,7 @@ It includes the third-party components listed below, each under its own
 license. Their copyright notices and license texts are reproduced here as
 those licenses require.
 
-Generated for version 0.5.63 by app/scripts/generate-third-party-licenses.mjs.
+Generated for version 0.5.64 by app/scripts/generate-third-party-licenses.mjs.
 Rust crates: 224   npm packages: 109
 
 ==============================================================================
