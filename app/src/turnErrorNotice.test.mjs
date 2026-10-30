@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { turnErrorNotice } from "./turnErrorNotice.ts";
+import { TurnCompletedNotificationSchema } from "./schemas.ts";
 
 // Taken from a real notification (2026-08-10): mid-stream failure, codex
 // retrying, and the turn did in fact carry on afterwards.
@@ -81,4 +82,77 @@ test("detail is dropped when it would just repeat the summary", () => {
   const notice = turnErrorNotice({ error: { message: "boom", additionalDetails: "boom" }, willRetry: false });
   assert.equal(notice.summary, "boom");
   assert.equal(notice.detail, null);
+});
+
+// User's screenshot (2026-10-30): turn/completed previously dumped this JSON.
+const OVERLOADED = {
+  additionalDetails: null,
+  codexErrorInfo: "serverOverloaded",
+  message: "Selected model is at capacity. Please try a different model.",
+  misalignment: null,
+};
+
+test("a capacity failure explains the cause and both recovery options in Japanese", () => {
+  const notice = turnErrorNotice({ error: OVERLOADED, willRetry: false });
+  assert.equal(notice.transient, false);
+  assert.match(notice.summary, /モデルが混雑/);
+  assert.match(notice.action, /時間を置いて/);
+  assert.match(notice.action, /別のモデル/);
+  assert.match(notice.action, /再送/);
+  assert.equal(notice.summary.includes(OVERLOADED.message), false);
+  assert.match(notice.detail, /Selected model is at capacity/);
+});
+
+test("turn/completed keeps the capacity explanation after an error notification", () => {
+  const notification = turnErrorNotice({ error: OVERLOADED, willRetry: false, turnId: "turn-1" });
+  const { turn } = TurnCompletedNotificationSchema.parse({
+    threadId: "thread-1",
+    turn: { id: "turn-1", status: "failed", error: OVERLOADED },
+  });
+  const completed = turnErrorNotice({ error: turn.error, turnId: turn.id, willRetry: false });
+  assert.deepEqual(completed, notification);
+});
+
+test("capacity retries say to wait and preserve diagnostic details without claiming a disconnect", () => {
+  const notice = turnErrorNotice({
+    error: { ...OVERLOADED, message: "Reconnecting... 1/5", additionalDetails: "request ID capacity-123" },
+    willRetry: true,
+  });
+  assert.equal(notice.transient, true);
+  assert.match(notice.summary, /混雑/);
+  assert.equal(notice.summary.includes("接続が切れ"), false);
+  assert.match(notice.action, /自動で再試行/);
+  assert.equal(notice.action.includes("再送"), false);
+  assert.match(notice.detail, /Reconnecting\.\.\. 1\/5/);
+  assert.match(notice.detail, /request ID capacity-123/);
+});
+
+test("the capacity code works without an English message, and the exact message works without the code", () => {
+  for (const error of [
+    { codexErrorInfo: "serverOverloaded" },
+    { message: OVERLOADED.message },
+    { message: "Reconnecting... 1/5", additionalDetails: OVERLOADED.message },
+  ]) {
+    assert.match(turnErrorNotice({ error }).summary, /モデルが混雑/);
+  }
+  assert.equal(turnErrorNotice({ error: { message: OVERLOADED.message } }).detail, OVERLOADED.message);
+});
+
+test("quota errors and generic 503 errors are not mislabeled as model capacity", () => {
+  for (const error of [
+    { codexErrorInfo: "usageLimitExceeded", message: "Usage limit reached" },
+    { codexErrorInfo: "rateLimitExceeded", message: OVERLOADED.message },
+    { codexErrorInfo: { httpConnectionFailed: { httpStatusCode: 503 } }, message: "Service unavailable" },
+  ]) {
+    const notice = turnErrorNotice({ error });
+    assert.equal(notice.summary, error.message);
+    assert.equal(notice.action, null);
+  }
+});
+
+test("unexpected error values from a completed turn still render without crashing", () => {
+  for (const error of [null, undefined, 42, { message: {}, additionalDetails: 12 }]) {
+    assert.equal(turnErrorNotice({ error }).summary, "エラーが発生しました");
+  }
+  assert.equal(turnErrorNotice({ error: "A legacy error" }).summary, "A legacy error");
 });

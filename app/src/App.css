@@ -89,6 +89,19 @@ body { background: var(--bg); color: var(--text); }
   padding: 6px 12px; font-size: 12px; cursor: pointer;
   white-space: pre-wrap; word-break: break-all;
 }
+.turn-error-banner {
+  cursor: default; white-space: normal; word-break: normal; overflow-wrap: anywhere;
+  flex-shrink: 0; max-height: 45vh; overflow-y: auto; line-height: 1.6;
+}
+.turn-error-heading { display: flex; align-items: start; justify-content: space-between; gap: 12px; }
+.turn-error-heading button {
+  flex-shrink: 0; color: inherit; background: transparent; border: 1px solid currentColor;
+  border-radius: 4px; padding: 1px 8px; font: inherit; cursor: pointer;
+}
+.turn-error-action { margin-top: 4px; white-space: pre-line; }
+.turn-error-details { margin-top: 4px; }
+.turn-error-details summary { cursor: pointer; }
+.turn-error-details pre { margin: 4px 0 0; white-space: pre-wrap; font: inherit; }
 /* Retrying, not failed -- deliberately not the red of .banner, since the work
    is still in progress and usually recovers. */
 .retry-notice {
@@ -97,6 +110,7 @@ body { background: var(--bg); color: var(--text); }
   padding: 6px 12px; font-size: 12px; cursor: pointer;
 }
 .retry-notice-hint { margin-left: 8px; opacity: 0.7; font-size: 11px; }
+.retry-notice-action { margin-top: 4px; white-space: pre-line; }
 @media (prefers-color-scheme: dark) {
   .banner { background: #3f1d1d; color: #fca5a5; border-color: #7f1d1d; }
   .retry-notice { background: #3a2f14; color: #fcd34d; border-color: #78350f; }

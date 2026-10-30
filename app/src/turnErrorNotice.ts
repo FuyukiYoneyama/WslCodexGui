@@ -24,7 +24,7 @@
 // optional additionalDetails and codexErrorInfo.
 
 export interface TurnErrorParams {
-  error?: { message?: string; additionalDetails?: string | null; codexErrorInfo?: unknown } | null;
+  error?: unknown;
   threadId?: string;
   turnId?: string;
   willRetry?: boolean;
@@ -35,15 +35,18 @@ export interface TurnErrorNotice {
   transient: boolean;
   /** One line, for the visible notice. */
   summary: string;
+  /** Recovery steps, shown with the summary rather than hidden in a tooltip. */
+  action: string | null;
   /** Everything else, for the tooltip -- including any request id. */
   detail: string | null;
   turnId: string | null;
 }
 
 export function turnErrorNotice(params: TurnErrorParams | null | undefined): TurnErrorNotice {
-  const error = params?.error ?? null;
-  const message = (error?.message ?? "").trim();
-  const details = (error?.additionalDetails ?? "").trim();
+  const rawError = params?.error;
+  const error = rawError && typeof rawError === "object" ? rawError as Record<string, unknown> : null;
+  const message = (typeof error?.message === "string" ? error.message : typeof rawError === "string" ? rawError : "").trim();
+  const details = (typeof error?.additionalDetails === "string" ? error.additionalDetails : "").trim();
   // A model the provider has retired fails every attempt the same way, so
   // codex's retries can't help (observed 2026-10-17 with Ollama Cloud:
   // "deepseek-v4-flash:0731 was retired on September 25, 2026. Try ..."
@@ -51,6 +54,28 @@ export function turnErrorNotice(params: TurnErrorParams | null | undefined): Tur
   // to do, instead of a quiet "Reconnecting... n/5".
   const retired = RETIRED_MODEL.test(message) || RETIRED_MODEL.test(details);
   const transient = params?.willRetry === true && !retired;
+
+  // The final turn/completed notification also carries this error. It must use
+  // the same explanation as `error`, or it overwrites the notice with raw JSON.
+  // Prefer the protocol code; the exact capacity wording covers providers or
+  // older servers that omit it. A generic 503 is not enough to identify this.
+  const errorCode = error?.codexErrorInfo;
+  const overloaded = errorCode === "serverOverloaded"
+    || ((errorCode == null || errorCode === "other")
+      && (MODEL_AT_CAPACITY.test(message) || MODEL_AT_CAPACITY.test(details)));
+  if (overloaded && !retired) {
+    return {
+      transient,
+      summary: transient
+        ? "選択中のモデルが混雑しています。"
+        : "選択中のモデルが混雑しているため、処理を完了できませんでした。",
+      action: transient
+        ? "自動で再試行しています。そのままお待ちください。"
+        : "少し時間を置いてから、もう一度メッセージを送信してください。\n急ぐ場合や繰り返す場合は、画面下部の「🧠」から別のモデルを選び、再送してください。",
+      detail: [...new Set([message, details, errorCode === "serverOverloaded" ? "エラーコード: serverOverloaded" : ""].filter(Boolean))].join("\n") || null,
+      turnId: params?.turnId ?? null,
+    };
+  }
 
   // codex puts its retry progress ("Reconnecting... 5/5") in `message`, which
   // is already the right one-liner. Fall back to additionalDetails when it is
@@ -65,10 +90,11 @@ export function turnErrorNotice(params: TurnErrorParams | null | undefined): Tur
     .filter(Boolean)
     .join("\n") || null;
 
-  return { transient, summary, detail, turnId: params?.turnId ?? null };
+  return { transient, summary, action: null, detail, turnId: params?.turnId ?? null };
 }
 
 const RETIRED_MODEL = /\bwas retired on\b/i;
+const MODEL_AT_CAPACITY = /\bselected model is at capacity\b/i;
 
 // Server messages run long and bury the useful part; the tooltip keeps the
 // whole thing, so the visible line only needs the opening statement.

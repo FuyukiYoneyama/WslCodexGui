@@ -18,7 +18,6 @@ import type {
   ThreadItem,
   ThreadTokenUsage,
   ThreadTokenUsageUpdated,
-  TurnCompletedNotification,
 } from "./types";
 import {
   AgentMessageDeltaSchema,
@@ -409,7 +408,7 @@ export default function App() {
   // object URL for the thumbnail only; wslPath is what actually gets sent.
   const [pastedImages, setPastedImages] = useState<PastedImage[]>([]);
   const [imageSavesPending, setImageSavesPending] = useState(0);
-  const [errorBanner, setErrorBanner] = useState<string | null>(null);
+  const [errorBanner, setErrorBanner] = useState<string | TurnErrorNotice | null>(null);
   // A retryable `error` notification: codex reconnecting mid-turn. Separate
   // from errorBanner because it is not a failure -- it disappears on its own
   // the moment work resumes, rather than sitting there until dismissed.
@@ -1418,7 +1417,7 @@ export default function App() {
             turnStartTimeRef.current = null;
             setLiveReasoning(null); // the transcript's reasoning item takes over
             if (p.turn.status === "failed") {
-              setErrorBanner(`Turn failed: ${JSON.stringify((p.turn as unknown as TurnCompletedNotification["turn"]).error)}`);
+              setErrorBanner(turnErrorNotice({ error: p.turn.error, turnId: p.turn.id, willRetry: false }));
             }
             journalMarkCompleted(p.threadId);
             notifyTurnEndIfIdle();
@@ -1532,7 +1531,7 @@ export default function App() {
               setRetryNotice(notice);
             } else {
               setRetryNotice(null);
-              setErrorBanner(notice.detail ? `${notice.summary}\n${notice.detail}` : notice.summary);
+              setErrorBanner(notice);
             }
             break;
           }
@@ -2041,7 +2040,7 @@ export default function App() {
       const models = await invoke<{ name: string; context_length: number | null }[]>("list_ollama_models");
       setOllamaModels(models.map((m) => ({ name: m.name, contextLength: m.context_length })));
       setErrorBanner((current) =>
-        current?.startsWith("Ollamaのモデル一覧を取得できませんでした。") ? null : current
+        typeof current === "string" && current.startsWith("Ollamaのモデル一覧を取得できませんでした。") ? null : current
       );
     } catch (e) {
       // Stays a banner rather than a quiet inline notice: the user has just
@@ -2856,9 +2855,24 @@ export default function App() {
           the highlight covers the window instead of pointing at the composer. */}
       {dragOver && <div className="drag-overlay" />}
 
-      {errorBanner && (
+      {typeof errorBanner === "string" && errorBanner && (
         <div className="banner" onClick={() => setErrorBanner(null)}>
           {errorBanner}
+        </div>
+      )}
+      {errorBanner && typeof errorBanner !== "string" && (
+        <div className="banner turn-error-banner" role="alert">
+          <div className="turn-error-heading">
+            <strong>{errorBanner.summary}</strong>
+            <button type="button" onClick={() => setErrorBanner(null)} aria-label="エラーを閉じる">閉じる</button>
+          </div>
+          {errorBanner.action && <div className="turn-error-action">対処法：{errorBanner.action}</div>}
+          {errorBanner.detail && (
+            <details className="turn-error-details">
+              <summary>詳細（元のエラーメッセージ）</summary>
+              <pre>{errorBanner.detail}</pre>
+            </details>
+          )}
         </div>
       )}
       {/* Not the red banner: codex has not failed, it is retrying. Clears
@@ -2870,8 +2884,9 @@ export default function App() {
           title={retryNotice.detail ?? undefined}
           onClick={() => setRetryNotice(null)}
         >
-          ⟳ 接続が切れたため再接続しています（{retryNotice.summary}）
+          ⟳ {retryNotice.action ? retryNotice.summary : `接続が切れたため再接続しています（${retryNotice.summary}）`}
           {retryNotice.detail && <span className="retry-notice-hint">詳細はカーソルを重ねてください</span>}
+          {retryNotice.action && <div className="retry-notice-action">{retryNotice.action}</div>}
         </div>
       )}
 
