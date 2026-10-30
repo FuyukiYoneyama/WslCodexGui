@@ -1940,7 +1940,7 @@ SOFTWARE.
 MIT License (MIT)
 
 Used by:
-  app 0.5.63
+  app 0.5.64
   brotli-decompressor 5.0.3
   dpi 0.1.2
   siphasher 1.0.3
