@@ -49,10 +49,23 @@ const positive = (n: number | null | undefined): n is number => typeof n === "nu
  * right there.
  */
 export function effectiveContextWindow(d: OllamaModelDetails): number {
+  return reportedContextWindow(d) ?? FALLBACK_CONTEXT_WINDOW;
+}
+
+/** A value reported by Ollama, without the catalog's fallback. */
+export function reportedContextWindow(d: OllamaModelDetails): number | null {
   const candidates = isCloudModel(d.name)
     ? [d.showContextLength, d.listContextLength]
     : [d.loadedContextLength, d.envContextLength, d.listContextLength, d.showContextLength];
-  return candidates.find(positive) ?? FALLBACK_CONTEXT_WINDOW;
+  return candidates.find(positive) ?? null;
+}
+
+/** An explicit Codex limit is safe only while it fits the model's current limit. */
+export function boundedContextWindow(selection: string, available: number | null): number | null {
+  const chosen = Number(selection.trim());
+  return positive(available) && Number.isSafeInteger(chosen) && chosen > 0 && chosen <= available
+    ? chosen
+    : null;
 }
 
 const CODEX_LEVELS = new Set(["minimal", "low", "medium", "high", "xhigh", "max", "ultra"]);

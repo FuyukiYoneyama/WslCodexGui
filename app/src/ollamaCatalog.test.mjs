@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  boundedContextWindow,
   codexCatalogEntry,
   codexCatalogJson,
   effectiveContextWindow,
+  reportedContextWindow,
   isCloudModel,
   reasoningLevels,
 } from "./ollamaCatalog.ts";
@@ -39,6 +41,16 @@ test("a cloud model uses its own size even when something is loaded locally", ()
 
 test("nothing known falls back to Ollama launch's default", () => {
   assert.equal(effectiveContextWindow({ ...base, name: "x:cloud" }), 128000);
+});
+
+test("an old explicit context cannot exceed the model's current limit", () => {
+  assert.equal(boundedContextWindow("1048576", 524288), null);
+  assert.equal(boundedContextWindow("262144", 524288), 262144);
+  assert.equal(boundedContextWindow("524288", 524288), 524288);
+  assert.equal(boundedContextWindow("262144", null), null);
+  assert.equal(boundedContextWindow("invalid", 524288), null);
+  assert.equal(reportedContextWindow({ ...base, name: "x:cloud", showContextLength: 524288 }), 524288);
+  assert.equal(reportedContextWindow({ ...base, name: "x:cloud" }), null);
 });
 
 // Values below are what /api/show returned on 2026-10-24.

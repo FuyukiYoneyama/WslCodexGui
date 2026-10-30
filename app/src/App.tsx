@@ -56,8 +56,10 @@ import { forcedEffortForModel } from "./modelEffort";
 import { PROJECT_SANDBOX, gitWritableRootsConfig } from "./sandboxConfig";
 import { turnModelFields } from "./turnModelFields";
 import {
+  boundedContextWindow,
   codexCatalogJson,
   effectiveContextWindow,
+  reportedContextWindow,
   reasoningLevels,
   type OllamaModelDetails,
 } from "./ollamaCatalog";
@@ -174,6 +176,15 @@ const USAGE_POLL_INTERVAL_MS = 30_000;
 // is the nearest level Ollama accepts to this environment's configured
 // "xhigh", which sits between "high" and "max".
 const OLLAMA_DEFAULT_EFFORT: ReasoningEffort = "high";
+const OLLAMA_CONTEXT_PRESETS = [
+  { value: "4096", label: "4K (4,096)" },
+  { value: "8192", label: "8K (8,192)" },
+  { value: "16384", label: "16K (16,384)" },
+  { value: "32768", label: "32K (32,768)" },
+  { value: "65536", label: "64K (65,536)" },
+  { value: "131072", label: "128K (131,072)" },
+  { value: "262144", label: "256K (262,144)" },
+];
 
 // turn/start's `summary` ("auto" | "concise" | "detailed" | "none"), sent on
 // every turn like effort/serviceTier. Not a user setting: without it, this
@@ -329,12 +340,29 @@ export default function App() {
   // metadata" warning) that doesn't match what Ollama's num_ctx actually
   // serves — align the two explicitly instead.
   const [ollamaContextWindow, setOllamaContextWindow] = useState(
-    () => localStorage.getItem("ollamaContextWindow") ?? "32768"
+    () => localStorage.getItem("ollamaContextWindow") ?? ""
   );
   const [ollamaModels, setOllamaModels] = useState<{ name: string; contextLength: number | null }[]>([]);
   const [ollamaModelsLoading, setOllamaModelsLoading] = useState(false);
   const ollamaRefreshInFlightRef = useRef(false);
   const [ollamaModelDetails, setOllamaModelDetails] = useState<OllamaModelDetails | null>(null);
+  const modelContextWindow = ollamaModelDetails?.name === ollamaModel.trim()
+    ? reportedContextWindow(ollamaModelDetails)
+    : ollamaModels.find((model) => model.name === ollamaModel)?.contextLength ?? null;
+  const ollamaContextExtras: { value: string; label: string }[] = [];
+  if (
+    ollamaContextWindow &&
+    !OLLAMA_CONTEXT_PRESETS.some((preset) => preset.value === ollamaContextWindow) &&
+    (modelContextWindow === null || boundedContextWindow(ollamaContextWindow, modelContextWindow) !== null)
+  ) {
+    ollamaContextExtras.push({ value: ollamaContextWindow, label: `保存済みの値 (${ollamaContextWindow})` });
+  }
+  useEffect(() => {
+    if (modelContextWindow !== null && ollamaContextWindow && boundedContextWindow(ollamaContextWindow, modelContextWindow) === null) {
+      setOllamaContextWindow("");
+      localStorage.setItem("ollamaContextWindow", "");
+    }
+  }, [modelContextWindow, ollamaContextWindow]);
   // Reasoning levels Ollama accepts for the current model, or null while
   // unknown (turnModelFields then falls back to its xhigh rule).
   const ollamaSupportedEfforts =
@@ -1640,14 +1668,18 @@ export default function App() {
     localStorage.setItem(codexPathStorageKey, codexPath);
     localStorage.setItem("provider", provider);
     localStorage.setItem("ollamaModel", ollamaModel);
-    localStorage.setItem("ollamaContextWindow", ollamaContextWindow);
-    // Fresh per connect: the model may have been loaded (or its allocation
-    // changed) since the picker last asked. The コンテキスト長 field, which
-    // the user can override, stays the figure codex is told.
-    const details = provider === "ollama" ? await loadOllamaModelDetails(ollamaModel, false) : null;
+    // Recheck the model limit at connect time. A saved manual value can become
+    // too large after the model or its loaded allocation changes.
+    const details = provider === "ollama" ? await loadOllamaModelDetails(ollamaModel) : null;
     const usableDetails = details && details.name === ollamaModel.trim() ? details : null;
+    const explicitContextWindow = provider === "ollama"
+      ? boundedContextWindow(ollamaContextWindow, usableDetails ? reportedContextWindow(usableDetails) : null)
+      : null;
+    const contextSelection = explicitContextWindow === null ? "" : String(explicitContextWindow);
+    if (provider === "ollama" && ollamaContextWindow !== contextSelection) setOllamaContextWindow(contextSelection);
+    localStorage.setItem("ollamaContextWindow", provider === "ollama" ? contextSelection : ollamaContextWindow);
     const ollamaModelCatalog = usableDetails
-      ? codexCatalogJson(usableDetails, Number(ollamaContextWindow) || effectiveContextWindow(usableDetails))
+      ? codexCatalogJson(usableDetails, explicitContextWindow ?? effectiveContextWindow(usableDetails))
       : null;
     // The model's own default level when Ollama reports one; otherwise the
     // old fixed pin (see below for why there must be one).
@@ -1658,7 +1690,7 @@ export default function App() {
         ? [
             "model_provider=ollama",
             ...(ollamaModel.trim() ? [`model=${ollamaModel.trim()}`] : []),
-            ...(ollamaContextWindow.trim() ? [`model_context_window=${ollamaContextWindow.trim()}`] : []),
+            ...(explicitContextWindow !== null ? [`model_context_window=${explicitContextWindow}`] : []),
             // Ollama rejects "xhigh" outright ("invalid reasoning value"),
             // and ~/.codex/config.toml's model_reasoning_effort applies to
             // this session whenever the footer's level is 指定なし -- so a
@@ -2057,15 +2089,12 @@ export default function App() {
   };
 
   // Per-model facts (capabilities, accepted thinking values, context sizes)
-  // for the codex model catalog -- see ollamaCatalog.ts. `applyContext` also
-  // refills the コンテキスト長 field, which only happens when the user picks a
-  // model, so a value they typed by hand survives a mere refresh.
-  const loadOllamaModelDetails = async (name: string, applyContext: boolean) => {
+  // for the codex model catalog -- see ollamaCatalog.ts.
+  const loadOllamaModelDetails = async (name: string) => {
     if (!name.trim()) return null;
     try {
       const details = await invoke<OllamaModelDetails>("ollama_model_details", { name: name.trim() });
       setOllamaModelDetails(details);
-      if (applyContext) setOllamaContextWindow(String(effectiveContextWindow(details)));
       return details;
     } catch (e) {
       // Not fatal: without details codex runs on fallback metadata, as before.
@@ -2077,11 +2106,8 @@ export default function App() {
 
   const onOllamaModelChange = (name: string) => {
     setOllamaModel(name);
-    const found = ollamaModels.find((m) => m.name === name);
-    if (found?.contextLength) {
-      setOllamaContextWindow(String(found.contextLength));
-    }
-    void loadOllamaModelDetails(name, true);
+    setOllamaContextWindow("");
+    void loadOllamaModelDetails(name);
   };
 
   // Re-read `ollama list` every time the model picker becomes visible -- at
@@ -2092,7 +2118,7 @@ export default function App() {
   useEffect(() => {
     if (provider === "ollama" && connState === "disconnected") {
       void refreshOllamaModels();
-      void loadOllamaModelDetails(ollamaModel, false);
+      void loadOllamaModelDetails(ollamaModel);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [provider, connState]);
@@ -2827,12 +2853,21 @@ export default function App() {
               </label>
               <label>
                 コンテキスト長
-                <input
+                <select
                   value={ollamaContextWindow}
                   onChange={(e) => setOllamaContextWindow(e.target.value)}
-                  placeholder="32768"
-                  title="モデル選択時にOllamaの実測値を自動反映（手動で上書き可）"
-                />
+                  title="自動は接続時のモデル情報を使用します。手動値は取得できたモデル上限まで選べます"
+                >
+                  <option value="">自動（接続時にモデルから取得）</option>
+                  {ollamaContextExtras.map((option) => (
+                    <option key={option.value} value={option.value}>{option.label}</option>
+                  ))}
+                  {OLLAMA_CONTEXT_PRESETS.filter(
+                    (preset) => modelContextWindow === null || Number(preset.value) <= modelContextWindow
+                  ).map((preset) => (
+                    <option key={preset.value} value={preset.value}>{preset.label}</option>
+                  ))}
+                </select>
               </label>
             </>
           )}
