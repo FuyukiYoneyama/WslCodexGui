@@ -1,6 +1,6 @@
 [package]
 name = "app"
-version = "0.5.67"
+version = "0.5.68"
 description = "WSL2内のCodex CLI（app-server）をWindowsネイティブGUIから操作するためのラッパーアプリ"
 authors = ["Fuyuki Yoneyama"]
 license = "MIT"
