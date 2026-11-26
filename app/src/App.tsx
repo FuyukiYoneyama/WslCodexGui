@@ -3536,17 +3536,9 @@ export default function App() {
         </details>
       )}
 
-      {/* Only rendered while connected: the bar exists to describe a live
-          session, so its own presence is the connection indicator and the
-          separate dot + "Codex server connected (owned)" text it used to
-          carry were saying the same thing twice. Disconnecting still shows
-          "切断中…" on the sidebar's own button, so no state is lost here.
-
-          Order is deliberate (what the current turn is spending, then the
-          fixed environment it runs in): model, reasoning level, speed,
-          quota, elapsed -- then WSL, CLI, thread. Stop keeps its
-          margin-left:auto so it stays pinned right regardless. */}
-      {connState === "connected" && (
+      {/* Keep connection status visible before connecting, too. Live session
+          badges are only meaningful after initialization succeeds. */}
+      {connState === "connected" ? (
         <footer className="statusbar">
           {provider === "ollama" ? (
             <span className="model-footer">🦙 {ollamaModel}</span>
@@ -3623,6 +3615,12 @@ export default function App() {
               ■ Stop
             </button>
           )}
+        </footer>
+      ) : (
+        <footer className="statusbar" role="status">
+          <span>{connState === "connecting" ? "接続中…" : connState === "disconnecting" ? "切断中…" : "未接続"}</span>
+          <span>{connectionMode === "native" ? "Windows-native" : `WSL: ${distro}`}</span>
+          <span>{connState === "disconnected" ? "左側の「接続」ボタンで開始できます" : "しばらくお待ちください"}</span>
         </footer>
       )}
     </div>
